@@ -16,18 +16,16 @@ private:
     Button boot_button_;
     Display* display_ = nullptr;
 
-    void EnsureLocalXiaozhiServerConfigured() {
+    void RestoreOfficialXiaozhiConfiguration() {
         Settings websocket_settings("websocket", true);
-        const auto current_url = websocket_settings.GetString("url");
-        const auto current_version = websocket_settings.GetInt("version");
         bool updated = false;
 
-        if (current_url != LOCAL_XIAOZHI_WS_URL) {
-            websocket_settings.SetString("url", LOCAL_XIAOZHI_WS_URL);
+        if (!websocket_settings.GetString("url").empty()) {
+            websocket_settings.EraseKey("url");
             updated = true;
         }
-        if (current_version != LOCAL_XIAOZHI_WS_VERSION) {
-            websocket_settings.SetInt("version", LOCAL_XIAOZHI_WS_VERSION);
+        if (websocket_settings.GetInt("version") != 0) {
+            websocket_settings.EraseKey("version");
             updated = true;
         }
         if (!websocket_settings.GetString("token").empty()) {
@@ -36,14 +34,13 @@ private:
         }
 
         Settings wifi_settings("wifi", true);
-        if (wifi_settings.GetString("ota_url") != LOCAL_XIAOZHI_OTA_URL) {
-            wifi_settings.SetString("ota_url", LOCAL_XIAOZHI_OTA_URL);
+        if (!wifi_settings.GetString("ota_url").empty()) {
+            wifi_settings.EraseKey("ota_url");
             updated = true;
         }
 
         if (updated) {
-            ESP_LOGI(TAG, "Configured local Xiaozhi server ws=%s ota=%s",
-                LOCAL_XIAOZHI_WS_URL, LOCAL_XIAOZHI_OTA_URL);
+            ESP_LOGI(TAG, "Restored official Xiaozhi websocket and OTA configuration");
         }
     }
 
@@ -72,7 +69,7 @@ private:
 public:
     RobotCabezaEsp32Inmp441Board() : boot_button_(BOOT_BUTTON_GPIO) {
         ESP_LOGI(TAG, "Initializing board");
-        EnsureLocalXiaozhiServerConfigured();
+        RestoreOfficialXiaozhiConfiguration();
         InitializeButtons();
         display_ = new NoDisplay();
     }
@@ -97,7 +94,7 @@ public:
         );
         static bool tuned = false;
         if (!tuned) {
-            audio_codec.SetInputGain(8.0f);
+            audio_codec.SetInputGain(2.0f);
             tuned = true;
         }
         return &audio_codec;

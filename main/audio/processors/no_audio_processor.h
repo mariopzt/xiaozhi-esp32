@@ -37,6 +37,7 @@ private:
     int vad_start_frames_ = 0;
     int vad_stop_frames_ = 0;
     int64_t last_level_log_us_ = 0;
+    int64_t input_warmup_until_us_ = 0;
     std::atomic<bool> speaker_active_ = false;
     std::atomic<int> current_input_level_ = 0;
 

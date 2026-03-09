@@ -16,7 +16,6 @@ const char* kSettingsNamespace = "memory";
 const char* kNotesKey = "notes";
 const char* kRecentTurnsKey = "recent_turns";
 const char* kUserNameKey = "user_name";
-
 std::string ToLowerAscii(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
         return static_cast<char>(std::tolower(ch));
@@ -507,12 +506,12 @@ std::string MemoryStore::GetUserName() const {
 
 void MemoryStore::SetNotes(const std::string& notes) {
     Settings settings(kSettingsNamespace, true);
-    settings.SetString(kNotesKey, notes);
+    settings.SetString(kNotesKey, TrimToLimit(notes, kMaxNotesChars));
 }
 
 void MemoryStore::SetRecentTurns(const std::string& turns) {
     Settings settings(kSettingsNamespace, true);
-    settings.SetString(kRecentTurnsKey, turns);
+    settings.SetString(kRecentTurnsKey, TrimToLimit(turns, kMaxRecentTurnsChars));
 }
 
 void MemoryStore::SetUserName(const std::string& user_name) {

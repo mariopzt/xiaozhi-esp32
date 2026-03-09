@@ -8,8 +8,8 @@
 namespace {
 #if CONFIG_BOARD_TYPE_ROBOTCABEZA_ESP32_INMP441
 // Plain ESP32 + INMP441 needs a gentler VAD so short syllables are not cut off.
-constexpr int kVadThresholdIdle = 16;
-constexpr int kVadThresholdWithSpeaker = 220;
+constexpr int kVadThresholdIdle = 3200;
+constexpr int kVadThresholdWithSpeaker = 5200;
 constexpr int kVadStopFramesIdle = 54;
 constexpr int kVadStartFramesWithSpeaker = 6;
 constexpr int kVadStopFramesWithSpeaker = 14;
@@ -21,7 +21,8 @@ constexpr int kVadStartFramesWithSpeaker = 8;
 constexpr int kVadStopFramesWithSpeaker = 14;
 #endif
 #if CONFIG_BOARD_TYPE_ROBOTCABEZA_ESP32_INMP441
-constexpr int kVadStartFrames = 2;
+constexpr int kVadStartFrames = 5;
+constexpr int64_t kInputWarmupUs = 450000;
 #else
 constexpr int kVadStartFrames = 4;
 #endif
@@ -109,8 +110,8 @@ void NoAudioProcessor::ConditionInput(std::vector<int16_t>& mono_chunk) {
     }
 
     int avg_abs = static_cast<int>(sum_abs / static_cast<int64_t>(mono_chunk.size()));
-    if (avg_abs >= 18 && peak_abs > 0 && peak_abs < 14000) {
-        float scale = std::min(4.0f, 12000.0f / static_cast<float>(peak_abs));
+    if (avg_abs >= 600 && peak_abs > 0 && peak_abs < 10000) {
+        float scale = std::min(1.35f, 10000.0f / static_cast<float>(peak_abs));
         for (auto& sample : mono_chunk) {
             int adjusted = static_cast<int>(sample * scale);
             sample = adjusted > INT16_MAX ? INT16_MAX : adjusted < INT16_MIN ? INT16_MIN : static_cast<int16_t>(adjusted);
@@ -140,6 +141,7 @@ void NoAudioProcessor::Start() {
     vad_start_frames_ = 0;
     vad_stop_frames_ = 0;
     last_level_log_us_ = 0;
+    input_warmup_until_us_ = esp_timer_get_time() + kInputWarmupUs;
 }
 
 void NoAudioProcessor::Stop() {
@@ -202,7 +204,11 @@ void NoAudioProcessor::UpdateVadState(const std::vector<int16_t>& mono_chunk) {
     }
 
     int avg_abs = (int)(sum_abs / (int64_t)mono_chunk.size());
+#if CONFIG_BOARD_TYPE_ROBOTCABEZA_ESP32_INMP441
+    current_input_level_.store(peak_abs, std::memory_order_relaxed);
+#else
     current_input_level_.store(avg_abs, std::memory_order_relaxed);
+#endif
     bool speaker_active = speaker_active_.load(std::memory_order_relaxed);
 #if !CONFIG_BOARD_TYPE_ROBOTCABEZA_ESP32_INMP441
     speaker_active = speaker_active || (codec_ != nullptr && codec_->output_enabled());
@@ -212,6 +218,22 @@ void NoAudioProcessor::UpdateVadState(const std::vector<int16_t>& mono_chunk) {
     int vad_stop_frames_target = speaker_active ? kVadStopFramesWithSpeaker : kVadStopFramesIdle;
     bool above_threshold = false;
 #if CONFIG_BOARD_TYPE_ROBOTCABEZA_ESP32_INMP441
+    int64_t now_us = esp_timer_get_time();
+    if (now_us < input_warmup_until_us_) {
+        vad_start_frames_ = 0;
+        vad_stop_frames_ = 0;
+        if (vad_speaking_) {
+            vad_speaking_ = false;
+            vad_state_change_callback_(false);
+        }
+        if (last_level_log_us_ == 0 || now_us - last_level_log_us_ >= 1000000) {
+            ESP_LOGI(TAG, "MIC warmup avg=%d peak=%d threshold=%d output=%d",
+                     avg_abs, peak_abs, threshold, speaker_active);
+            last_level_log_us_ = now_us;
+        }
+        return;
+    }
+
     // INMP441 on plain ESP32 can produce isolated full-scale spikes on one sample.
     // Use average energy here so brief spikes do not keep the turn open forever.
     above_threshold = avg_abs >= threshold;
@@ -221,7 +243,6 @@ void NoAudioProcessor::UpdateVadState(const std::vector<int16_t>& mono_chunk) {
 #endif
 
 #if CONFIG_BOARD_TYPE_ROBOTCABEZA_ESP32_INMP441
-    int64_t now_us = esp_timer_get_time();
     if (last_level_log_us_ == 0 || now_us - last_level_log_us_ >= 1000000) {
         ESP_LOGI(TAG, "MIC avg=%d peak=%d threshold=%d output=%d vad=%d",
                  avg_abs, peak_abs, threshold,

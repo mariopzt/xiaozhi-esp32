@@ -300,6 +300,57 @@ class MemoryService:
             upsert=True,
         )
 
+    async def export_device_memory(self, user_id: str) -> dict[str, str]:
+        context = await self.get_context(user_id, "")
+        profile = context.profile or {}
+        user_name = str(profile.get("name") or "").strip()
+
+        notes_lines: list[str] = []
+        for item in self._render_profile_lines(profile):
+            if item and item not in notes_lines:
+                notes_lines.append(item)
+        for item in context.memories:
+            cleaned = str(item).strip()
+            if cleaned and cleaned not in notes_lines:
+                notes_lines.append(cleaned)
+
+        recent_lines: list[str] = []
+        for turn in context.recent_turns[-20:]:
+            role = str(turn.get("role", "")).strip().lower()
+            text = str(turn.get("text", "")).strip()
+            if not text:
+                continue
+            speaker = "U" if role == "user" else "A"
+            recent_lines.append(f"{speaker}: {text}")
+
+        return {
+            "user_name": user_name,
+            "notes": "\n".join(notes_lines),
+            "recent_turns": "\n".join(recent_lines),
+        }
+
+    async def import_device_snapshot(
+        self,
+        user_id: str,
+        *,
+        user_name: str = "",
+        notes: str = "",
+    ) -> None:
+        clean_name = " ".join((user_name or "").split()).strip()
+        now = utc_now()
+        if clean_name:
+            await self._profiles.update_one(
+                {"user_id": user_id},
+                {"$set": {"name": clean_name, "updated_at": now}, "$setOnInsert": {"created_at": now}},
+                upsert=True,
+            )
+
+        for raw_line in (notes or "").splitlines():
+            line = " ".join(raw_line.split()).strip()
+            if not line:
+                continue
+            await self._store_memory(user_id, line, "device_snapshot")
+
     async def _next_turn_index(self, user_id: str, session_id: str) -> int:
         last_turn = await self._turns.find_one(
             {"user_id": user_id, "session_id": session_id},

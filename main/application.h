@@ -159,6 +159,7 @@ private:
     int64_t speaking_barge_in_started_us_ = 0;
     int64_t listening_started_us_ = 0;
     int64_t listening_voice_started_us_ = 0;
+    int listening_peak_level_ = 0;
     std::atomic<int64_t> last_incoming_audio_us_{0};
 
 

@@ -22,16 +22,17 @@
 #define TAG "Application"
 
 namespace {
-constexpr int64_t kTtsStreamQuietUs = 350000;
-constexpr int kTtsPlaybackTailMs = 120;
+constexpr int64_t kTtsStreamQuietUs = 180000;
+constexpr int kTtsPlaybackTailMs = 40;
 constexpr int kBargeInMinLevel = 340;
 constexpr int kBargeInFloorMargin = 180;
 constexpr int64_t kBargeInCalibrationUs = 220000;
 constexpr int64_t kBargeInHoldUs = 220000;
 #if CONFIG_BOARD_TYPE_ROBOTCABEZA_ESP32_INMP441
-constexpr int64_t kLocalMinTurnUs = 1500000;
-constexpr int64_t kLocalMinSpeechUs = 450000;
-constexpr int64_t kLocalMaxSpeechUs = 4200000;
+constexpr int64_t kLocalMinTurnUs = 900000;
+constexpr int64_t kLocalMinSpeechUs = 250000;
+constexpr int64_t kLocalMaxSpeechUs = 1800000;
+constexpr int kLocalCommitLevel = 5500;
 #else
 constexpr int64_t kLocalMinTurnUs = 1800000;
 constexpr int64_t kLocalMinSpeechUs = 700000;
@@ -266,10 +267,14 @@ void Application::Run() {
                         continue;
                     }
                     bool speaking = audio_service_.IsVoiceDetected();
+                    int current_level = audio_service_.GetCurrentInputLevel();
                     int64_t now_us = esp_timer_get_time();
                     if (speaking) {
                         if (!listening_voice_seen_) {
                             listening_voice_started_us_ = now_us;
+                            listening_peak_level_ = current_level;
+                        } else if (current_level > listening_peak_level_) {
+                            listening_peak_level_ = current_level;
                         }
                         listening_voice_seen_ = true;
                         pending_local_stop_listening_ = false;
@@ -289,6 +294,14 @@ void Application::Run() {
                             pending_local_stop_listening_ = true;
                             ESP_LOGI(TAG, "Delaying stop listening: speech=%lldms turn=%lldms",
                                      speech_elapsed_us / 1000, turn_elapsed_us / 1000);
+                            continue;
+                        }
+                        if (listening_peak_level_ < kLocalCommitLevel) {
+                            ESP_LOGI(TAG, "Ignoring weak speech segment peak=%d", listening_peak_level_);
+                            listening_voice_seen_ = false;
+                            pending_local_stop_listening_ = false;
+                            listening_voice_started_us_ = 0;
+                            listening_peak_level_ = 0;
                             continue;
                         }
                         listening_voice_seen_ = false;
@@ -328,6 +341,14 @@ void Application::Run() {
                 int64_t speech_elapsed_us = listening_voice_started_us_ > 0 ? now_us - listening_voice_started_us_ : 0;
                 int64_t turn_elapsed_us = listening_started_us_ > 0 ? now_us - listening_started_us_ : 0;
                 if (speech_elapsed_us >= kLocalMinSpeechUs && turn_elapsed_us >= kLocalMinTurnUs) {
+                    if (listening_peak_level_ < kLocalCommitLevel) {
+                        ESP_LOGI(TAG, "Dropping delayed weak speech segment peak=%d", listening_peak_level_);
+                        listening_voice_seen_ = false;
+                        pending_local_stop_listening_ = false;
+                        listening_voice_started_us_ = 0;
+                        listening_peak_level_ = 0;
+                        continue;
+                    }
                     listening_voice_seen_ = false;
                     pending_local_stop_listening_ = false;
                     waiting_server_reply_ = true;
@@ -598,11 +619,6 @@ void Application::InitializeProtocol() {
             // Block briefly instead of dropping late TTS packets when the speaker path
             // is still draining. Dropping here truncates whole sentences.
             audio_service_.PushPacketToDecodeQueue(std::move(packet), true);
-#if CONFIG_BOARD_TYPE_ROBOTCABEZA_ESP32_INMP441
-            if (GetDeviceState() == kDeviceStateSpeaking) {
-                StartBargeInTask();
-            }
-#endif
         }
     });
     
@@ -1226,6 +1242,7 @@ void Application::HandleStateChangedEvent() {
             listening_started_us_ = esp_timer_get_time();
             speaking_barge_in_started_us_ = 0;
             listening_voice_started_us_ = 0;
+            listening_peak_level_ = 0;
             display->SetStatus(Lang::Strings::LISTENING);
             display->SetEmotion("neutral");
             audio_service_.SetVadSpeakerActive(false);
@@ -1277,6 +1294,7 @@ void Application::HandleStateChangedEvent() {
             listening_started_us_ = 0;
             listening_voice_started_us_ = 0;
             speaking_barge_in_started_us_ = 0;
+            listening_peak_level_ = 0;
             display->SetStatus(Lang::Strings::SPEAKING);
             speaking_started_us_ = esp_timer_get_time();
             last_incoming_audio_us_.store(speaking_started_us_, std::memory_order_relaxed);
@@ -1305,6 +1323,7 @@ void Application::HandleStateChangedEvent() {
             listening_started_us_ = 0;
             speaking_barge_in_started_us_ = 0;
             listening_voice_started_us_ = 0;
+            listening_peak_level_ = 0;
             audio_service_.SetVadSpeakerActive(false);
             audio_service_.EnableVoiceProcessing(false);
             audio_service_.EnableWakeWordDetection(false);
@@ -1337,7 +1356,11 @@ void Application::SetListeningMode(ListeningMode mode) {
 }
 
 ListeningMode Application::GetDefaultListeningMode() const {
+#if CONFIG_BOARD_TYPE_ROBOTCABEZA_ESP32_INMP441
+    return kListeningModeManualStop;
+#else
     return aec_mode_ == kAecOff ? kListeningModeAutoStop : kListeningModeRealtime;
+#endif
 }
 
 void Application::Reboot() {
