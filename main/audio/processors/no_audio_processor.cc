@@ -204,14 +204,14 @@ void NoAudioProcessor::UpdateVadState(const std::vector<int16_t>& mono_chunk) {
     }
 
     int avg_abs = (int)(sum_abs / (int64_t)mono_chunk.size());
-#if CONFIG_BOARD_TYPE_ROBOTCABEZA_ESP32_INMP441
-    current_input_level_.store(peak_abs, std::memory_order_relaxed);
-#else
-    current_input_level_.store(avg_abs, std::memory_order_relaxed);
-#endif
     bool speaker_active = speaker_active_.load(std::memory_order_relaxed);
 #if !CONFIG_BOARD_TYPE_ROBOTCABEZA_ESP32_INMP441
     speaker_active = speaker_active || (codec_ != nullptr && codec_->output_enabled());
+#endif
+#if CONFIG_BOARD_TYPE_ROBOTCABEZA_ESP32_INMP441
+    current_input_level_.store(speaker_active ? avg_abs : peak_abs, std::memory_order_relaxed);
+#else
+    current_input_level_.store(avg_abs, std::memory_order_relaxed);
 #endif
     int threshold = speaker_active ? kVadThresholdWithSpeaker : kVadThresholdIdle;
     int vad_start_frames_target = speaker_active ? kVadStartFramesWithSpeaker : kVadStartFrames;

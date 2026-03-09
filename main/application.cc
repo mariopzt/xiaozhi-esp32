@@ -24,10 +24,10 @@
 namespace {
 constexpr int64_t kTtsStreamQuietUs = 180000;
 constexpr int kTtsPlaybackTailMs = 40;
-constexpr int kBargeInMinLevel = 340;
-constexpr int kBargeInFloorMargin = 180;
+constexpr int kBargeInMinLevel = 1200;
+constexpr int kBargeInFloorMargin = 220;
 constexpr int64_t kBargeInCalibrationUs = 220000;
-constexpr int64_t kBargeInHoldUs = 220000;
+constexpr int64_t kBargeInHoldUs = 160000;
 #if CONFIG_BOARD_TYPE_ROBOTCABEZA_ESP32_INMP441
 constexpr int64_t kLocalMinTurnUs = 900000;
 constexpr int64_t kLocalMinSpeechUs = 250000;
@@ -1126,7 +1126,7 @@ void Application::StartBargeInTask() {
             int current_level = app->audio_service_.GetCurrentInputLevel();
 
             if (now_us - app->speaking_started_us_ < kBargeInCalibrationUs) {
-                floor_level = std::max(floor_level, current_level);
+                floor_level = std::max(floor_level, std::min(current_level, 4200));
                 vTaskDelay(pdMS_TO_TICKS(20));
                 continue;
             }
@@ -1303,6 +1303,7 @@ void Application::HandleStateChangedEvent() {
             audio_service_.SetVadSpeakerActive(true);
             audio_service_.EnableVoiceProcessing(true, false, false);
             audio_service_.EnableWakeWordDetection(false);
+            StartBargeInTask();
 #else
             if (listening_mode_ != kListeningModeRealtime) {
                 audio_service_.EnableVoiceProcessing(false);
