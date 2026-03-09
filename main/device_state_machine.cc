@@ -54,8 +54,9 @@ bool DeviceStateMachine::IsValidTransition(DeviceState from, DeviceState to) con
                    to == kDeviceStateAudioTesting;
 
         case kDeviceStateAudioTesting:
-            // Can go back to wifi configuring
-            return to == kDeviceStateWifiConfiguring;
+            // Can go back to wifi configuring or idle
+            return to == kDeviceStateWifiConfiguring ||
+                   to == kDeviceStateIdle;
 
         case kDeviceStateActivating:
             // Can go to upgrading, idle, or back to wifi configuring (on error)
@@ -69,13 +70,14 @@ bool DeviceStateMachine::IsValidTransition(DeviceState from, DeviceState to) con
                    to == kDeviceStateActivating;
 
         case kDeviceStateIdle:
-            // Can go to connecting, listening (manual mode), speaking, activating, upgrading, or wifi configuring
+            // Can go to connecting, listening (manual mode), speaking, activating, upgrading, wifi configuring, or audio testing
             return to == kDeviceStateConnecting ||
                    to == kDeviceStateListening ||
                    to == kDeviceStateSpeaking ||
                    to == kDeviceStateActivating ||
                    to == kDeviceStateUpgrading ||
-                   to == kDeviceStateWifiConfiguring;
+                   to == kDeviceStateWifiConfiguring ||
+                   to == kDeviceStateAudioTesting;
 
         case kDeviceStateConnecting:
             // Can go to idle (failed) or listening (success)

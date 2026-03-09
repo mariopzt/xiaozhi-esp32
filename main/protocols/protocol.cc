@@ -65,11 +65,13 @@ void Protocol::SendStartListening(ListeningMode mode) {
         message += ",\"mode\":\"manual\"";
     }
     message += "}";
+    ESP_LOGI(TAG, "SendStartListening mode=%d", (int)mode);
     SendText(message);
 }
 
 void Protocol::SendStopListening() {
     std::string message = "{\"session_id\":\"" + session_id_ + "\",\"type\":\"listen\",\"state\":\"stop\"}";
+    ESP_LOGI(TAG, "SendStopListening");
     SendText(message);
 }
 

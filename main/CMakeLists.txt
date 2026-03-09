@@ -33,6 +33,7 @@ set(SOURCES "audio/audio_codec.cc"
             "system_info.cc"
             "application.cc"
             "ota.cc"
+            "memory_store.cc"
             "settings.cc"
             "device_state_machine.cc"
             "assets.cc"
@@ -103,6 +104,8 @@ elseif(CONFIG_BOARD_TYPE_BREAD_COMPACT_ESP32_LCD)
     set(BOARD_TYPE "bread-compact-esp32-lcd")
     set(BUILTIN_TEXT_FONT font_puhui_basic_14_1)
     set(BUILTIN_ICON_FONT font_awesome_14_1)
+elseif(CONFIG_BOARD_TYPE_ROBOTCABEZA_ESP32_INMP441)
+    set(BOARD_TYPE "robotcabeza-esp32-inmp441")
 elseif(CONFIG_BOARD_TYPE_DF_K10)
     set(BOARD_TYPE "df-k10")
     set(BUILTIN_TEXT_FONT font_noto_basic_20_4)

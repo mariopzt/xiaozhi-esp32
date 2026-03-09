@@ -1,6 +1,7 @@
 #include "audio_service.h"
 #include <esp_log.h>
 #include <cstring>
+#include <cstdlib>
 
 #define RATE_CVT_CFG(_src_rate, _dest_rate, _channel)        \
     (esp_ae_rate_cvt_cfg_t)                                  \
@@ -99,6 +100,9 @@ void AudioService::Initialize(AudioCodec* codec) {
 #endif
 
     audio_processor_->OnOutput([this](std::vector<int16_t>&& data) {
+        if (!stream_mic_to_server_) {
+            return;
+        }
         PushTaskToEncodeQueue(kAudioTaskTypeEncodeToSendQueue, std::move(data));
     });
 
@@ -260,6 +264,7 @@ void AudioService::AudioInputTask() {
                     }
                     data = std::move(mono_data);
                 }
+                ConditionTestingAudio(data);
                 PushTaskToEncodeQueue(kAudioTaskTypeEncodeToTestingQueue, std::move(data));
                 continue;
             }
@@ -445,6 +450,40 @@ void AudioService::OpusCodecTask() {
     ESP_LOGW(TAG, "Opus codec task stopped");
 }
 
+void AudioService::ConditionTestingAudio(std::vector<int16_t>& pcm) {
+#if CONFIG_BOARD_TYPE_ROBOTCABEZA_ESP32_INMP441
+    if (pcm.empty()) {
+        return;
+    }
+
+    int64_t sum = 0;
+    int peak_abs = 0;
+    for (int16_t sample : pcm) {
+        sum += sample;
+        int value = std::abs(static_cast<int>(sample));
+        if (value > peak_abs) {
+            peak_abs = value;
+        }
+    }
+
+    int dc_offset = static_cast<int>(sum / static_cast<int64_t>(pcm.size()));
+    for (auto& sample : pcm) {
+        int adjusted = static_cast<int>(sample) - dc_offset;
+        sample = adjusted > INT16_MAX ? INT16_MAX : adjusted < INT16_MIN ? INT16_MIN : static_cast<int16_t>(adjusted);
+    }
+
+    if (peak_abs > 12000) {
+        float scale = 12000.0f / static_cast<float>(peak_abs);
+        for (auto& sample : pcm) {
+            int adjusted = static_cast<int>(sample * scale);
+            sample = adjusted > INT16_MAX ? INT16_MAX : adjusted < INT16_MIN ? INT16_MIN : static_cast<int16_t>(adjusted);
+        }
+    }
+#else
+    (void)pcm;
+#endif
+}
+
 void AudioService::SetDecodeSampleRate(int sample_rate, int frame_duration) {
     if (decoder_sample_rate_ == sample_rate && decoder_duration_ms_ == frame_duration) {
         return;
@@ -576,16 +615,22 @@ void AudioService::EnableWakeWordDetection(bool enable) {
     }
 }
 
-void AudioService::EnableVoiceProcessing(bool enable) {
+void AudioService::EnableVoiceProcessing(bool enable, bool stream_audio, bool reset_decoder) {
     ESP_LOGD(TAG, "%s voice processing", enable ? "Enabling" : "Disabling");
+    stream_mic_to_server_ = enable && stream_audio;
     if (enable) {
         if (!audio_processor_initialized_) {
             audio_processor_->Initialize(codec_, OPUS_FRAME_DURATION_MS, models_list_);
             audio_processor_initialized_ = true;
         }
 
-        /* We should make sure no audio is playing */
-        ResetDecoder();
+        if (audio_processor_->IsRunning()) {
+            return;
+        }
+
+        if (reset_decoder) {
+            ResetDecoder();
+        }
         audio_input_need_warmup_ = true;
         // Reset input resampler to clear cached data from previous mode (e.g. WakeWord)
         // This prevents buffer overflow when switching between different feed sizes
@@ -598,6 +643,10 @@ void AudioService::EnableVoiceProcessing(bool enable) {
         audio_processor_->Start();
         xEventGroupSetBits(event_group_, AS_EVENT_AUDIO_PROCESSOR_RUNNING);
     } else {
+        stream_mic_to_server_ = false;
+        if (!audio_processor_->IsRunning()) {
+            return;
+        }
         audio_processor_->Stop();
         xEventGroupClearBits(event_group_, AS_EVENT_AUDIO_PROCESSOR_RUNNING);
     }
@@ -624,6 +673,13 @@ void AudioService::EnableDeviceAec(bool enable) {
     }
 
     audio_processor_->EnableDeviceAec(enable);
+}
+
+void AudioService::SetVadSpeakerActive(bool active) {
+    if (!audio_processor_initialized_) {
+        return;
+    }
+    audio_processor_->SetSpeakerActive(active);
 }
 
 void AudioService::SetCallbacks(AudioServiceCallbacks& callbacks) {
@@ -656,6 +712,13 @@ void AudioService::PlaySound(const std::string_view& ogg) {
 bool AudioService::IsIdle() {
     std::lock_guard<std::mutex> lock(audio_queue_mutex_);
     return audio_encode_queue_.empty() && audio_decode_queue_.empty() && audio_playback_queue_.empty() && audio_testing_queue_.empty();
+}
+
+int AudioService::GetCurrentInputLevel() const {
+    if (!audio_processor_) {
+        return 0;
+    }
+    return audio_processor_->GetCurrentInputLevel();
 }
 
 void AudioService::WaitForPlaybackQueueEmpty() {

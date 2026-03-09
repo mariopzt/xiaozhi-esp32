@@ -38,8 +38,8 @@
 
 #define OPUS_FRAME_DURATION_MS 60
 #define MAX_ENCODE_TASKS_IN_QUEUE 2
-#define MAX_PLAYBACK_TASKS_IN_QUEUE 2
-#define MAX_DECODE_PACKETS_IN_QUEUE (2400 / OPUS_FRAME_DURATION_MS)
+#define MAX_PLAYBACK_TASKS_IN_QUEUE 4
+#define MAX_DECODE_PACKETS_IN_QUEUE (6000 / OPUS_FRAME_DURATION_MS)
 #define MAX_SEND_PACKETS_IN_QUEUE (2400 / OPUS_FRAME_DURATION_MS)
 #define AUDIO_TESTING_MAX_DURATION_MS 10000
 #define MAX_TIMESTAMPS_IN_QUEUE 3
@@ -118,12 +118,15 @@ public:
     void WaitForPlaybackQueueEmpty();
     bool IsWakeWordRunning() const { return xEventGroupGetBits(event_group_) & AS_EVENT_WAKE_WORD_RUNNING; }
     bool IsAudioProcessorRunning() const { return xEventGroupGetBits(event_group_) & AS_EVENT_AUDIO_PROCESSOR_RUNNING; }
+    bool IsVoiceStreamingEnabled() const { return stream_mic_to_server_; }
+    int GetCurrentInputLevel() const;
     bool IsAfeWakeWord();
 
     void EnableWakeWordDetection(bool enable);
-    void EnableVoiceProcessing(bool enable);
+    void EnableVoiceProcessing(bool enable, bool stream_audio = true, bool reset_decoder = true);
     void EnableAudioTesting(bool enable);
     void EnableDeviceAec(bool enable);
+    void SetVadSpeakerActive(bool active);
 
     void SetCallbacks(AudioServiceCallbacks& callbacks);
 
@@ -179,6 +182,7 @@ private:
     bool voice_detected_ = false;
     bool service_stopped_ = true;
     bool audio_input_need_warmup_ = false;
+    bool stream_mic_to_server_ = false;
 
     esp_timer_handle_t audio_power_timer_ = nullptr;
     std::chrono::steady_clock::time_point last_input_time_;
@@ -187,6 +191,7 @@ private:
     void AudioInputTask();
     void AudioOutputTask();
     void OpusCodecTask();
+    void ConditionTestingAudio(std::vector<int16_t>& pcm);
     void PushTaskToEncodeQueue(AudioTaskType type, std::vector<int16_t>&& pcm);
     void SetDecodeSampleRate(int sample_rate, int frame_duration);
     void CheckAndUpdateAudioPowerState();

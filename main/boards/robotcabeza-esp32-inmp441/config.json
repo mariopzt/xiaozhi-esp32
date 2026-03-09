@@ -1,0 +1,13 @@
+{
+    "target": "esp32",
+    "builds": [
+        {
+            "name": "robotcabeza-esp32-inmp441",
+            "sdkconfig_append": [
+                "CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y",
+                "CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=\"partitions/v2/4m.csv\"",
+                "CONFIG_LANGUAGE_ES_ES=y"
+            ]
+        }
+    ]
+}

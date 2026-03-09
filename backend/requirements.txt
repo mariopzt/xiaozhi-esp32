@@ -1,0 +1,13 @@
+fastapi==0.116.1
+uvicorn[standard]==0.35.0
+websockets==15.0.1
+openai==1.107.0
+motor==3.7.1
+pydantic==2.11.7
+pydantic-settings==2.10.1
+numpy==2.3.2
+soundfile==0.13.1
+faster-whisper==1.1.1
+av==15.0.0
+pyttsx3==2.99
+requests==2.32.5

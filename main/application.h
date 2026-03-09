@@ -7,6 +7,7 @@
 #include <esp_timer.h>
 
 #include <string>
+#include <atomic>
 #include <mutex>
 #include <deque>
 #include <memory>
@@ -102,6 +103,8 @@ public:
      * Sends MAIN_EVENT_STOP_LISTENING to be handled in Run()
      */
     void StopListening();
+    void EnterAudioTestingMode();
+    void ExitAudioTestingMode();
 
     void Reboot();
     void WakeWordInvoke(const std::string& wake_word);
@@ -111,6 +114,7 @@ public:
     void SetAecMode(AecMode mode);
     AecMode GetAecMode() const { return aec_mode_; }
     void PlaySound(const std::string_view& sound);
+    void StopAudioPlayback();
     AudioService& GetAudioService() { return audio_service_; }
     
     /**
@@ -140,8 +144,22 @@ private:
     bool aborted_ = false;
     bool assets_version_checked_ = false;
     bool play_popup_on_listening_ = false;  // Flag to play popup sound after state changes to listening
+    bool suppress_auto_relisten_once_ = false;
+    bool listening_voice_seen_ = false;
+    bool waiting_server_reply_ = false;
+    bool pending_local_stop_listening_ = false;
+    bool pending_audio_testing_ = false;
+    bool pending_resume_listening_after_tts_ = false;
+    std::atomic<bool> resume_listening_task_running_{false};
+    std::atomic<bool> barge_in_task_running_{false};
+    std::atomic<bool> pending_tts_stream_start_{false};
     int clock_ticks_ = 0;
     TaskHandle_t activation_task_handle_ = nullptr;
+    int64_t speaking_started_us_ = 0;
+    int64_t speaking_barge_in_started_us_ = 0;
+    int64_t listening_started_us_ = 0;
+    int64_t listening_voice_started_us_ = 0;
+    std::atomic<int64_t> last_incoming_audio_us_{0};
 
 
     // Event handlers
@@ -155,6 +173,9 @@ private:
     void HandleWakeWordDetectedEvent();
     void ContinueOpenAudioChannel(ListeningMode mode);
     void ContinueWakeWordInvoke(const std::string& wake_word);
+    void StartResumeListeningAfterTtsTask();
+    void StartBargeInTask();
+    void StopAudioPlaybackOnMainThread();
 
     // Activation task (runs in background)
     void ActivationTask();

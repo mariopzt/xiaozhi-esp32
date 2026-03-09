@@ -109,6 +109,7 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
             cJSON_Delete(root);
             return;
         }
+        ESP_LOGI(TAG, "Incoming MQTT JSON type=%s", type->valuestring);
 
         if (strcmp(type->valuestring, "hello") == 0) {
             ParseServerHello(root);

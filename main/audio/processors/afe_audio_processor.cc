@@ -199,3 +199,11 @@ void AfeAudioProcessor::EnableDeviceAec(bool enable) {
         afe_iface_->enable_vad(afe_data_);
     }
 }
+
+void AfeAudioProcessor::SetSpeakerActive(bool active) {
+    (void)active;
+}
+
+int AfeAudioProcessor::GetCurrentInputLevel() const {
+    return 0;
+}

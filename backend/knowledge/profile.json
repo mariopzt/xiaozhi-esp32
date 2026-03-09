@@ -1,0 +1,16 @@
+{
+  "usuario": {
+    "nombre": "",
+    "apodos": [],
+    "ciudad": "",
+    "cumpleanos": "",
+    "trabajo": "",
+    "hobbies": []
+  },
+  "familia": [],
+  "mascotas": [],
+  "gustos": [],
+  "no_le_gusta": [],
+  "rutinas": [],
+  "notas_importantes": []
+}

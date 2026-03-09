@@ -21,6 +21,8 @@ public:
     virtual void OnVadStateChange(std::function<void(bool speaking)> callback) = 0;
     virtual size_t GetFeedSize() = 0;
     virtual void EnableDeviceAec(bool enable) = 0;
+    virtual void SetSpeakerActive(bool active) = 0;
+    virtual int GetCurrentInputLevel() const = 0;
 };
 
 #endif

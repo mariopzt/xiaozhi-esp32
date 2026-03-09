@@ -12,6 +12,7 @@
 
 #include "application.h"
 #include "display.h"
+#include "memory_store.h"
 #include "oled_display.h"
 #include "board.h"
 #include "settings.h"
@@ -42,6 +43,42 @@ void McpServer::AddCommonTools() {
     // Do not add custom tools here.
     // Custom tools must be added in the board's InitializeTools function.
 
+    AddTool("self.memory.get_context",
+        "Persistent local memory across sessions. You must call this as the first tool in every new chat or after reconnecting.\n"
+        "You must also call it before answering questions about past conversations, the user's profile, names, age, preferences, reminders, projects, or ongoing tasks.\n"
+        "If memory contains the answer, use it directly instead of saying you do not know.\n"
+        "Return:\n"
+        "  A JSON object with saved notes, recent conversation turns from earlier sessions, and a combined context string you can reuse in your reasoning.",
+        PropertyList(),
+        [](const PropertyList& properties) -> ReturnValue {
+            (void)properties;
+            return MemoryStore::GetInstance().GetContextJson();
+        });
+
+    AddTool("self.memory.get_user_profile",
+        "You must call this before answering questions about the user's name, age, identity, or profile.\n"
+        "Examples: 'what is my name', 'how am I called', 'who am I', 'how old am I', 'what do you remember about me'.\n"
+        "If this tool returns a known fact, answer with that fact instead of saying you do not know.\n"
+        "Return:\n"
+        "  A JSON object with the remembered user name and durable notes.",
+        PropertyList(),
+        [](const PropertyList& properties) -> ReturnValue {
+            (void)properties;
+            return MemoryStore::GetInstance().GetUserProfileJson();
+        });
+
+    AddTool("self.memory.remember",
+        "You must call this when the user says things like 'remember this', 'recuerda', 'acuérdate', or explicitly asks you to remember a fact for future sessions.\n"
+        "Save durable facts that should survive future sessions, such as the user's preferences, names, age, devices, projects, recurring goals, or explicit things they ask you to remember.\n"
+        "Do not store one-off chatter. Use short factual notes.",
+        PropertyList({
+            Property("note", kPropertyTypeString)
+        }),
+        [](const PropertyList& properties) -> ReturnValue {
+            MemoryStore::GetInstance().Remember(properties["note"].value<std::string>());
+            return true;
+        });
+
     AddTool("self.get_device_status",
         "Provides the real-time information of the device, including the current status of the audio speaker, screen, battery, network, etc.\n"
         "Use this tool for: \n"
@@ -60,6 +97,16 @@ void McpServer::AddCommonTools() {
         [&board](const PropertyList& properties) -> ReturnValue {
             auto codec = board.GetAudioCodec();
             codec->SetOutputVolume(properties["volume"].value<int>());
+            return true;
+        });
+
+    AddTool("self.audio_speaker.stop",
+        "Stop any current audio playback immediately. Use this when the user says things like: stop, stop the music, pause the song, quitala, quita la musica, quita la cancion, para la musica.",
+        PropertyList(),
+        [](const PropertyList& properties) -> ReturnValue {
+            (void)properties;
+            auto& app = Application::GetInstance();
+            app.StopAudioPlayback();
             return true;
         });
     
@@ -127,6 +174,15 @@ void McpServer::AddCommonTools() {
 
 void McpServer::AddUserOnlyTools() {
     // System tools
+    AddUserOnlyTool("self.memory.clear",
+        "Clear all persisted local memory notes and recent cross-session conversation.",
+        PropertyList(),
+        [](const PropertyList& properties) -> ReturnValue {
+            (void)properties;
+            MemoryStore::GetInstance().Clear();
+            return true;
+        });
+
     AddUserOnlyTool("self.get_system_info",
         "Get the system information",
         PropertyList(),

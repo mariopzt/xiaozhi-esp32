@@ -8,6 +8,7 @@
 #include "assets/lang_config.h"
 #include "mcp_server.h"
 #include "assets.h"
+#include "memory_store.h"
 #include "settings.h"
 
 #include <cstring>
@@ -16,8 +17,26 @@
 #include <driver/gpio.h>
 #include <arpa/inet.h>
 #include <font_awesome.h>
+#include <wifi_manager.h>
 
 #define TAG "Application"
+
+namespace {
+constexpr int64_t kTtsStreamQuietUs = 1200000;
+constexpr int kTtsPlaybackTailMs = 500;
+constexpr int kBargeInMinLevel = 340;
+constexpr int kBargeInFloorMargin = 180;
+constexpr int64_t kBargeInCalibrationUs = 220000;
+constexpr int64_t kBargeInHoldUs = 220000;
+#if CONFIG_BOARD_TYPE_ROBOTCABEZA_ESP32_INMP441
+constexpr int64_t kLocalMinTurnUs = 1500000;
+constexpr int64_t kLocalMinSpeechUs = 450000;
+constexpr int64_t kLocalMaxSpeechUs = 4200000;
+#else
+constexpr int64_t kLocalMinTurnUs = 1800000;
+constexpr int64_t kLocalMinSpeechUs = 700000;
+#endif
+}
 
 
 Application::Application() {
@@ -100,59 +119,61 @@ void Application::Initialize() {
 
     // Set network event callback for UI updates and network state handling
     board.SetNetworkEventCallback([this](NetworkEvent event, const std::string& data) {
-        auto display = Board::GetInstance().GetDisplay();
-        
-        switch (event) {
-            case NetworkEvent::Scanning:
-                display->ShowNotification(Lang::Strings::SCANNING_WIFI, 30000);
-                xEventGroupSetBits(event_group_, MAIN_EVENT_NETWORK_DISCONNECTED);
-                break;
-            case NetworkEvent::Connecting: {
-                if (data.empty()) {
-                    // Cellular network - registering without carrier info yet
-                    display->SetStatus(Lang::Strings::REGISTERING_NETWORK);
-                } else {
-                    // WiFi or cellular with carrier info
-                    std::string msg = Lang::Strings::CONNECT_TO;
-                    msg += data;
-                    msg += "...";
-                    display->ShowNotification(msg.c_str(), 30000);
+        Schedule([this, event, data]() {
+            auto display = Board::GetInstance().GetDisplay();
+
+            switch (event) {
+                case NetworkEvent::Scanning:
+                    display->ShowNotification(Lang::Strings::SCANNING_WIFI, 30000);
+                    xEventGroupSetBits(event_group_, MAIN_EVENT_NETWORK_DISCONNECTED);
+                    break;
+                case NetworkEvent::Connecting: {
+                    if (data.empty()) {
+                        // Cellular network - registering without carrier info yet
+                        display->SetStatus(Lang::Strings::REGISTERING_NETWORK);
+                    } else {
+                        // WiFi or cellular with carrier info
+                        std::string msg = Lang::Strings::CONNECT_TO;
+                        msg += data;
+                        msg += "...";
+                        display->ShowNotification(msg.c_str(), 30000);
+                    }
+                    break;
                 }
-                break;
+                case NetworkEvent::Connected: {
+                    std::string msg = Lang::Strings::CONNECTED_TO;
+                    msg += data;
+                    display->ShowNotification(msg.c_str(), 30000);
+                    xEventGroupSetBits(event_group_, MAIN_EVENT_NETWORK_CONNECTED);
+                    break;
+                }
+                case NetworkEvent::Disconnected:
+                    xEventGroupSetBits(event_group_, MAIN_EVENT_NETWORK_DISCONNECTED);
+                    break;
+                case NetworkEvent::WifiConfigModeEnter:
+                    // WiFi config mode enter is handled by WifiBoard internally
+                    break;
+                case NetworkEvent::WifiConfigModeExit:
+                    // WiFi config mode exit is handled by WifiBoard internally
+                    break;
+                // Cellular modem specific events
+                case NetworkEvent::ModemDetecting:
+                    display->SetStatus(Lang::Strings::DETECTING_MODULE);
+                    break;
+                case NetworkEvent::ModemErrorNoSim:
+                    Alert(Lang::Strings::ERROR, Lang::Strings::PIN_ERROR, "triangle_exclamation", Lang::Sounds::OGG_ERR_PIN);
+                    break;
+                case NetworkEvent::ModemErrorRegDenied:
+                    Alert(Lang::Strings::ERROR, Lang::Strings::REG_ERROR, "triangle_exclamation", Lang::Sounds::OGG_ERR_REG);
+                    break;
+                case NetworkEvent::ModemErrorInitFailed:
+                    Alert(Lang::Strings::ERROR, Lang::Strings::MODEM_INIT_ERROR, "triangle_exclamation", Lang::Sounds::OGG_EXCLAMATION);
+                    break;
+                case NetworkEvent::ModemErrorTimeout:
+                    display->SetStatus(Lang::Strings::REGISTERING_NETWORK);
+                    break;
             }
-            case NetworkEvent::Connected: {
-                std::string msg = Lang::Strings::CONNECTED_TO;
-                msg += data;
-                display->ShowNotification(msg.c_str(), 30000);
-                xEventGroupSetBits(event_group_, MAIN_EVENT_NETWORK_CONNECTED);
-                break;
-            }
-            case NetworkEvent::Disconnected:
-                xEventGroupSetBits(event_group_, MAIN_EVENT_NETWORK_DISCONNECTED);
-                break;
-            case NetworkEvent::WifiConfigModeEnter:
-                // WiFi config mode enter is handled by WifiBoard internally
-                break;
-            case NetworkEvent::WifiConfigModeExit:
-                // WiFi config mode exit is handled by WifiBoard internally
-                break;
-            // Cellular modem specific events
-            case NetworkEvent::ModemDetecting:
-                display->SetStatus(Lang::Strings::DETECTING_MODULE);
-                break;
-            case NetworkEvent::ModemErrorNoSim:
-                Alert(Lang::Strings::ERROR, Lang::Strings::PIN_ERROR, "triangle_exclamation", Lang::Sounds::OGG_ERR_PIN);
-                break;
-            case NetworkEvent::ModemErrorRegDenied:
-                Alert(Lang::Strings::ERROR, Lang::Strings::REG_ERROR, "triangle_exclamation", Lang::Sounds::OGG_ERR_REG);
-                break;
-            case NetworkEvent::ModemErrorInitFailed:
-                Alert(Lang::Strings::ERROR, Lang::Strings::MODEM_INIT_ERROR, "triangle_exclamation", Lang::Sounds::OGG_EXCLAMATION);
-                break;
-            case NetworkEvent::ModemErrorTimeout:
-                display->SetStatus(Lang::Strings::REGISTERING_NETWORK);
-                break;
-        }
+        });
     });
 
     // Start network asynchronously
@@ -218,10 +239,15 @@ void Application::Run() {
         }
 
         if (bits & MAIN_EVENT_SEND_AUDIO) {
+            int sent_packets = 0;
             while (auto packet = audio_service_.PopPacketFromSendQueue()) {
                 if (protocol_ && !protocol_->SendAudio(std::move(packet))) {
                     break;
                 }
+                sent_packets++;
+            }
+            if (sent_packets > 0) {
+                ESP_LOGI(TAG, "Sent %d audio packets", sent_packets);
             }
         }
 
@@ -230,9 +256,50 @@ void Application::Run() {
         }
 
         if (bits & MAIN_EVENT_VAD_CHANGE) {
-            if (GetDeviceState() == kDeviceStateListening) {
+            auto state = GetDeviceState();
+            if (state == kDeviceStateListening) {
                 auto led = Board::GetInstance().GetLed();
                 led->OnStateChanged();
+#if CONFIG_BOARD_TYPE_ROBOTCABEZA_ESP32_INMP441
+                if (protocol_ != nullptr && listening_mode_ == kListeningModeManualStop) {
+                    if (waiting_server_reply_) {
+                        continue;
+                    }
+                    bool speaking = audio_service_.IsVoiceDetected();
+                    int64_t now_us = esp_timer_get_time();
+                    if (speaking) {
+                        if (!listening_voice_seen_) {
+                            listening_voice_started_us_ = now_us;
+                        }
+                        listening_voice_seen_ = true;
+                        pending_local_stop_listening_ = false;
+                        int64_t speech_elapsed_us = listening_voice_started_us_ > 0 ? now_us - listening_voice_started_us_ : 0;
+                        if (speech_elapsed_us >= kLocalMaxSpeechUs) {
+                            listening_voice_seen_ = false;
+                            pending_local_stop_listening_ = false;
+                            waiting_server_reply_ = true;
+                            ESP_LOGI(TAG, "Local max speech reached, sending stop listening");
+                            protocol_->SendStopListening();
+                            audio_service_.EnableVoiceProcessing(false);
+                        }
+                    } else if (listening_voice_seen_) {
+                        int64_t speech_elapsed_us = listening_voice_started_us_ > 0 ? now_us - listening_voice_started_us_ : 0;
+                        int64_t turn_elapsed_us = listening_started_us_ > 0 ? now_us - listening_started_us_ : 0;
+                        if (speech_elapsed_us < kLocalMinSpeechUs || turn_elapsed_us < kLocalMinTurnUs) {
+                            pending_local_stop_listening_ = true;
+                            ESP_LOGI(TAG, "Delaying stop listening: speech=%lldms turn=%lldms",
+                                     speech_elapsed_us / 1000, turn_elapsed_us / 1000);
+                            continue;
+                        }
+                        listening_voice_seen_ = false;
+                        pending_local_stop_listening_ = false;
+                        waiting_server_reply_ = true;
+                        ESP_LOGI(TAG, "Local VAD end-of-speech, sending stop listening");
+                        protocol_->SendStopListening();
+                        audio_service_.EnableVoiceProcessing(false);
+                    }
+                }
+#endif
             }
         }
 
@@ -249,6 +316,27 @@ void Application::Run() {
             clock_ticks_++;
             auto display = Board::GetInstance().GetDisplay();
             display->UpdateStatusBar();
+
+#if CONFIG_BOARD_TYPE_ROBOTCABEZA_ESP32_INMP441
+            if (GetDeviceState() == kDeviceStateListening &&
+                protocol_ != nullptr &&
+                listening_mode_ == kListeningModeManualStop &&
+                pending_local_stop_listening_ &&
+                !waiting_server_reply_ &&
+                !audio_service_.IsVoiceDetected()) {
+                int64_t now_us = esp_timer_get_time();
+                int64_t speech_elapsed_us = listening_voice_started_us_ > 0 ? now_us - listening_voice_started_us_ : 0;
+                int64_t turn_elapsed_us = listening_started_us_ > 0 ? now_us - listening_started_us_ : 0;
+                if (speech_elapsed_us >= kLocalMinSpeechUs && turn_elapsed_us >= kLocalMinTurnUs) {
+                    listening_voice_seen_ = false;
+                    pending_local_stop_listening_ = false;
+                    waiting_server_reply_ = true;
+                    ESP_LOGI(TAG, "Delayed local stop listening");
+                    protocol_->SendStopListening();
+                    audio_service_.EnableVoiceProcessing(false);
+                }
+            }
+#endif
         
             // Print debug info every 10 seconds
             if (clock_ticks_ % 10 == 0) {
@@ -261,8 +349,10 @@ void Application::Run() {
 void Application::HandleNetworkConnectedEvent() {
     ESP_LOGI(TAG, "Network connected");
     auto state = GetDeviceState();
+    auto& board = Board::GetInstance();
 
     if (state == kDeviceStateStarting || state == kDeviceStateWifiConfiguring) {
+        board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
         // Network is ready, start activation
         SetDeviceState(kDeviceStateActivating);
         if (activation_task_handle_ != nullptr) {
@@ -279,7 +369,7 @@ void Application::HandleNetworkConnectedEvent() {
     }
 
     // Update the status bar immediately to show the network state
-    auto display = Board::GetInstance().GetDisplay();
+    auto display = board.GetDisplay();
     display->UpdateStatusBar(true);
 }
 
@@ -315,8 +405,13 @@ void Application::HandleActivationDoneEvent() {
     board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
 
     Schedule([this]() {
-        // Play the success sound to indicate the device is ready
-        audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
+        audio_service_.PlaySound(Lang::Sounds::OGG_WELCOME);
+#if CONFIG_BOARD_TYPE_ROBOTCABEZA_ESP32_INMP441
+        // This board runs hands-free on plain ESP32, so open the audio channel
+        // after the welcome prompt and let the server auto-stop on silence.
+        audio_service_.WaitForPlaybackQueueEmpty();
+        ToggleChatState();
+#endif
     });
 }
 
@@ -474,13 +569,15 @@ void Application::InitializeProtocol() {
     auto& board = Board::GetInstance();
     auto display = board.GetDisplay();
     auto codec = board.GetAudioCodec();
+    Settings websocket_settings("websocket", false);
+    const bool has_local_websocket = !websocket_settings.GetString("url").empty();
 
     display->SetStatus(Lang::Strings::LOADING_PROTOCOL);
 
-    if (ota_->HasMqttConfig()) {
-        protocol_ = std::make_unique<MqttProtocol>();
-    } else if (ota_->HasWebsocketConfig()) {
+    if (ota_->HasWebsocketConfig() || has_local_websocket) {
         protocol_ = std::make_unique<WebsocketProtocol>();
+    } else if (ota_->HasMqttConfig()) {
+        protocol_ = std::make_unique<MqttProtocol>();
     } else {
         ESP_LOGW(TAG, "No protocol specified in the OTA config, using MQTT");
         protocol_ = std::make_unique<MqttProtocol>();
@@ -496,8 +593,11 @@ void Application::InitializeProtocol() {
     });
     
     protocol_->OnIncomingAudio([this](std::unique_ptr<AudioStreamPacket> packet) {
-        if (GetDeviceState() == kDeviceStateSpeaking) {
-            audio_service_.PushPacketToDecodeQueue(std::move(packet));
+        last_incoming_audio_us_.store(esp_timer_get_time(), std::memory_order_relaxed);
+        if (GetDeviceState() == kDeviceStateSpeaking || pending_tts_stream_start_.load(std::memory_order_relaxed)) {
+            // Block briefly instead of dropping late TTS packets when the speaker path
+            // is still draining. Dropping here truncates whole sentences.
+            audio_service_.PushPacketToDecodeQueue(std::move(packet), true);
         }
     });
     
@@ -512,36 +612,76 @@ void Application::InitializeProtocol() {
     protocol_->OnAudioChannelClosed([this, &board]() {
         board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
         Schedule([this]() {
+            auto previous_state = GetDeviceState();
             auto display = Board::GetInstance().GetDisplay();
             display->SetChatMessage("system", "");
+#if CONFIG_BOARD_TYPE_ROBOTCABEZA_ESP32_INMP441
+            if (pending_audio_testing_) {
+                pending_audio_testing_ = false;
+                suppress_auto_relisten_once_ = true;
+                SetDeviceState(kDeviceStateIdle);
+                audio_service_.EnableAudioTesting(true);
+                SetDeviceState(kDeviceStateAudioTesting);
+                return;
+            }
+#endif
             SetDeviceState(kDeviceStateIdle);
+#if CONFIG_BOARD_TYPE_ROBOTCABEZA_ESP32_INMP441
+            bool should_auto_relisten =
+                !suppress_auto_relisten_once_ &&
+                WifiManager::GetInstance().IsConnected() &&
+                (previous_state == kDeviceStateConnecting ||
+                 previous_state == kDeviceStateListening ||
+                 previous_state == kDeviceStateSpeaking);
+            suppress_auto_relisten_once_ = false;
+            if (should_auto_relisten && protocol_ != nullptr) {
+                ToggleChatState();
+            }
+#endif
         });
     });
     
     protocol_->OnIncomingJson([this, display](const cJSON* root) {
         // Parse JSON data
         auto type = cJSON_GetObjectItem(root, "type");
+        if (!cJSON_IsString(type) || type->valuestring == nullptr) {
+            ESP_LOGW(TAG, "Incoming JSON without valid type");
+            return;
+        }
+        ESP_LOGI(TAG, "Incoming JSON type=%s", type->valuestring);
         if (strcmp(type->valuestring, "tts") == 0) {
             auto state = cJSON_GetObjectItem(root, "state");
+            if (!cJSON_IsString(state) || state->valuestring == nullptr) {
+                ESP_LOGW(TAG, "TTS message without valid state");
+                return;
+            }
             if (strcmp(state->valuestring, "start") == 0) {
+                pending_tts_stream_start_.store(true, std::memory_order_relaxed);
                 Schedule([this]() {
                     aborted_ = false;
                     SetDeviceState(kDeviceStateSpeaking);
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {
+                pending_tts_stream_start_.store(false, std::memory_order_relaxed);
                 Schedule([this]() {
                     if (GetDeviceState() == kDeviceStateSpeaking) {
+#if CONFIG_BOARD_TYPE_ROBOTCABEZA_ESP32_INMP441
+                        pending_resume_listening_after_tts_ = true;
+                        StartResumeListeningAfterTtsTask();
+#else
                         if (listening_mode_ == kListeningModeManualStop) {
                             SetDeviceState(kDeviceStateIdle);
                         } else {
                             SetDeviceState(kDeviceStateListening);
                         }
+#endif
                     }
                 });
             } else if (strcmp(state->valuestring, "sentence_start") == 0) {
                 auto text = cJSON_GetObjectItem(root, "text");
                 if (cJSON_IsString(text)) {
                     ESP_LOGI(TAG, "<< %s", text->valuestring);
+                    MemoryStore::GetInstance().AppendConversationLine("A", text->valuestring);
                     Schedule([display, message = std::string(text->valuestring)]() {
                         display->SetChatMessage("assistant", message.c_str());
                     });
@@ -551,6 +691,8 @@ void Application::InitializeProtocol() {
             auto text = cJSON_GetObjectItem(root, "text");
             if (cJSON_IsString(text)) {
                 ESP_LOGI(TAG, ">> %s", text->valuestring);
+                MemoryStore::GetInstance().LearnFromUserText(text->valuestring);
+                MemoryStore::GetInstance().AppendConversationLine("U", text->valuestring);
                 Schedule([display, message = std::string(text->valuestring)]() {
                     display->SetChatMessage("user", message.c_str());
                 });
@@ -569,7 +711,7 @@ void Application::InitializeProtocol() {
             }
         } else if (strcmp(type->valuestring, "system") == 0) {
             auto command = cJSON_GetObjectItem(root, "command");
-            if (cJSON_IsString(command)) {
+            if (cJSON_IsString(command) && command->valuestring != nullptr) {
                 ESP_LOGI(TAG, "System command: %s", command->valuestring);
                 if (strcmp(command->valuestring, "reboot") == 0) {
                     // Do a reboot if user requests a OTA update
@@ -671,6 +813,43 @@ void Application::StopListening() {
     xEventGroupSetBits(event_group_, MAIN_EVENT_STOP_LISTENING);
 }
 
+void Application::EnterAudioTestingMode() {
+    Schedule([this]() {
+        auto state = GetDeviceState();
+        if (state == kDeviceStateStarting || state == kDeviceStateAudioTesting) {
+            return;
+        }
+
+        pending_audio_testing_ = false;
+        if (protocol_ && protocol_->IsAudioChannelOpened()) {
+#if CONFIG_BOARD_TYPE_ROBOTCABEZA_ESP32_INMP441
+            suppress_auto_relisten_once_ = true;
+#endif
+            pending_audio_testing_ = true;
+            protocol_->CloseAudioChannel();
+            return;
+        }
+
+        state = GetDeviceState();
+        if (state == kDeviceStateConnecting || state == kDeviceStateListening || state == kDeviceStateSpeaking) {
+            SetDeviceState(kDeviceStateIdle);
+        }
+
+        audio_service_.EnableAudioTesting(true);
+        SetDeviceState(kDeviceStateAudioTesting);
+    });
+}
+
+void Application::ExitAudioTestingMode() {
+    Schedule([this]() {
+        if (GetDeviceState() != kDeviceStateAudioTesting) {
+            return;
+        }
+        audio_service_.EnableAudioTesting(false);
+        SetDeviceState(kDeviceStateIdle);
+    });
+}
+
 void Application::HandleToggleChatEvent() {
     auto state = GetDeviceState();
     
@@ -706,6 +885,9 @@ void Application::HandleToggleChatEvent() {
     } else if (state == kDeviceStateSpeaking) {
         AbortSpeaking(kAbortReasonNone);
     } else if (state == kDeviceStateListening) {
+#if CONFIG_BOARD_TYPE_ROBOTCABEZA_ESP32_INMP441
+        suppress_auto_relisten_once_ = true;
+#endif
         protocol_->CloseAudioChannel();
     }
 }
@@ -746,15 +928,16 @@ void Application::HandleStartListeningEvent() {
         if (!protocol_->IsAudioChannelOpened()) {
             SetDeviceState(kDeviceStateConnecting);
             // Schedule to let the state change be processed first (UI update)
-            Schedule([this]() {
-                ContinueOpenAudioChannel(kListeningModeManualStop);
+            auto mode = GetDefaultListeningMode();
+            Schedule([this, mode]() {
+                ContinueOpenAudioChannel(mode);
             });
             return;
         }
-        SetListeningMode(kListeningModeManualStop);
+        SetListeningMode(GetDefaultListeningMode());
     } else if (state == kDeviceStateSpeaking) {
         AbortSpeaking(kAbortReasonNone);
-        SetListeningMode(kListeningModeManualStop);
+        SetListeningMode(GetDefaultListeningMode());
     }
 }
 
@@ -767,6 +950,9 @@ void Application::HandleStopListeningEvent() {
         return;
     } else if (state == kDeviceStateListening) {
         if (protocol_) {
+#if CONFIG_BOARD_TYPE_ROBOTCABEZA_ESP32_INMP441
+            suppress_auto_relisten_once_ = true;
+#endif
             protocol_->SendStopListening();
         }
         SetDeviceState(kDeviceStateIdle);
@@ -852,6 +1038,139 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
 #endif
 }
 
+void Application::StartResumeListeningAfterTtsTask() {
+#if CONFIG_BOARD_TYPE_ROBOTCABEZA_ESP32_INMP441
+    if (resume_listening_task_running_.exchange(true, std::memory_order_relaxed)) {
+        return;
+    }
+
+    auto task_entry = [](void* arg) {
+        auto* app = static_cast<Application*>(arg);
+        while (app->pending_resume_listening_after_tts_) {
+            if (app->GetDeviceState() != kDeviceStateSpeaking) {
+                break;
+            }
+
+            int64_t quiet_us = esp_timer_get_time() - app->last_incoming_audio_us_.load(std::memory_order_relaxed);
+            if (quiet_us >= kTtsStreamQuietUs && app->audio_service_.IsIdle()) {
+                vTaskDelay(pdMS_TO_TICKS(kTtsPlaybackTailMs));
+                app->Schedule([app]() {
+                    if (!app->pending_resume_listening_after_tts_ || app->GetDeviceState() != kDeviceStateSpeaking) {
+                        return;
+                    }
+                    if (esp_timer_get_time() - app->last_incoming_audio_us_.load(std::memory_order_relaxed) < kTtsStreamQuietUs) {
+                        return;
+                    }
+                    if (!app->audio_service_.IsIdle()) {
+                        return;
+                    }
+                    app->pending_resume_listening_after_tts_ = false;
+                    app->SetDeviceState(kDeviceStateListening);
+                });
+                break;
+            }
+
+            vTaskDelay(pdMS_TO_TICKS(20));
+        }
+
+        app->resume_listening_task_running_.store(false, std::memory_order_relaxed);
+        vTaskDelete(nullptr);
+    };
+
+    if (xTaskCreate(task_entry, "resume_listen", 3072, this, 2, nullptr) != pdPASS) {
+        resume_listening_task_running_.store(false, std::memory_order_relaxed);
+        ESP_LOGE(TAG, "Failed to create resume listening task");
+    }
+#endif
+}
+
+void Application::StartBargeInTask() {
+#if CONFIG_BOARD_TYPE_ROBOTCABEZA_ESP32_INMP441
+    if (barge_in_task_running_.exchange(true, std::memory_order_relaxed)) {
+        return;
+    }
+
+    auto task_entry = [](void* arg) {
+        auto* app = static_cast<Application*>(arg);
+        int floor_level = 0;
+        int threshold = kBargeInMinLevel;
+        int64_t above_threshold_since_us = 0;
+        bool logged_ready = false;
+        while (true) {
+            if (app->GetDeviceState() != kDeviceStateSpeaking) {
+                break;
+            }
+
+            int64_t now_us = esp_timer_get_time();
+            int current_level = app->audio_service_.GetCurrentInputLevel();
+
+            if (now_us - app->speaking_started_us_ < kBargeInCalibrationUs) {
+                floor_level = std::max(floor_level, current_level);
+                vTaskDelay(pdMS_TO_TICKS(20));
+                continue;
+            }
+
+            threshold = std::max(kBargeInMinLevel, floor_level + kBargeInFloorMargin);
+
+            if (!logged_ready) {
+                ESP_LOGI(TAG, "Barge-in calibrated floor=%d threshold=%d", floor_level, threshold);
+                logged_ready = true;
+            }
+
+            if (app->audio_service_.IsVoiceDetected() && current_level >= threshold) {
+                if (above_threshold_since_us == 0) {
+                    above_threshold_since_us = now_us;
+                }
+            } else {
+                above_threshold_since_us = 0;
+            }
+
+            if (above_threshold_since_us > 0 &&
+                now_us - above_threshold_since_us >= kBargeInHoldUs) {
+                ESP_LOGI(TAG, "Barge-in detected, aborting TTS and resuming listening");
+                app->Schedule([app]() {
+                    if (app->GetDeviceState() == kDeviceStateSpeaking) {
+                        app->StopAudioPlaybackOnMainThread();
+                    }
+                });
+                break;
+            }
+
+            vTaskDelay(pdMS_TO_TICKS(20));
+        }
+
+        app->barge_in_task_running_.store(false, std::memory_order_relaxed);
+        vTaskDelete(nullptr);
+    };
+
+    if (xTaskCreate(task_entry, "barge_in", 3072, this, 2, nullptr) != pdPASS) {
+        barge_in_task_running_.store(false, std::memory_order_relaxed);
+        ESP_LOGE(TAG, "Failed to create barge-in task");
+    }
+#endif
+}
+
+void Application::StopAudioPlaybackOnMainThread() {
+    pending_resume_listening_after_tts_ = false;
+    listening_voice_seen_ = false;
+    waiting_server_reply_ = false;
+    speaking_barge_in_started_us_ = 0;
+
+    if (GetDeviceState() == kDeviceStateSpeaking) {
+        AbortSpeaking(kAbortReasonNone);
+    }
+
+    audio_service_.SetVadSpeakerActive(false);
+    audio_service_.EnableVoiceProcessing(false);
+    audio_service_.ResetDecoder();
+
+    if (protocol_ && protocol_->IsAudioChannelOpened()) {
+        SetListeningMode(GetDefaultListeningMode());
+    } else {
+        SetDeviceState(kDeviceStateIdle);
+    }
+}
+
 void Application::HandleStateChangedEvent() {
     DeviceState new_state = state_machine_.GetState();
     clock_ticks_ = 0;
@@ -864,23 +1183,61 @@ void Application::HandleStateChangedEvent() {
     switch (new_state) {
         case kDeviceStateUnknown:
         case kDeviceStateIdle:
+            pending_tts_stream_start_.store(false, std::memory_order_relaxed);
+            listening_voice_seen_ = false;
+            waiting_server_reply_ = false;
+            pending_local_stop_listening_ = false;
+            pending_resume_listening_after_tts_ = false;
+            listening_started_us_ = 0;
+            speaking_barge_in_started_us_ = 0;
+            listening_voice_started_us_ = 0;
             display->SetStatus(Lang::Strings::STANDBY);
             display->ClearChatMessages();  // Clear messages first
             display->SetEmotion("neutral"); // Then set emotion (wechat mode checks child count)
+            audio_service_.SetVadSpeakerActive(false);
             audio_service_.EnableVoiceProcessing(false);
             audio_service_.EnableWakeWordDetection(true);
             break;
         case kDeviceStateConnecting:
+            pending_tts_stream_start_.store(false, std::memory_order_relaxed);
+            listening_voice_seen_ = false;
+            waiting_server_reply_ = false;
+            pending_local_stop_listening_ = false;
+            pending_resume_listening_after_tts_ = false;
+            listening_started_us_ = 0;
+            speaking_barge_in_started_us_ = 0;
+            listening_voice_started_us_ = 0;
             display->SetStatus(Lang::Strings::CONNECTING);
             display->SetEmotion("neutral");
             display->SetChatMessage("system", "");
+            audio_service_.SetVadSpeakerActive(false);
             break;
-        case kDeviceStateListening:
+        case kDeviceStateListening: {
+            pending_tts_stream_start_.store(false, std::memory_order_relaxed);
+            listening_voice_seen_ = false;
+            waiting_server_reply_ = false;
+            pending_local_stop_listening_ = false;
+            pending_resume_listening_after_tts_ = false;
+            listening_started_us_ = esp_timer_get_time();
+            speaking_barge_in_started_us_ = 0;
+            listening_voice_started_us_ = 0;
             display->SetStatus(Lang::Strings::LISTENING);
             display->SetEmotion("neutral");
+            audio_service_.SetVadSpeakerActive(false);
+
+            bool should_play_popup = play_popup_on_listening_;
+
+#if CONFIG_BOARD_TYPE_ROBOTCABEZA_ESP32_INMP441
+            // On this board the audible popup was being recorded as microphone input.
+            if (should_play_popup) {
+                play_popup_on_listening_ = false;
+                audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
+                audio_service_.WaitForPlaybackQueueEmpty();
+            }
+#endif
 
             // Make sure the audio processor is running
-            if (play_popup_on_listening_ || !audio_service_.IsAudioProcessorRunning()) {
+            if (should_play_popup || !audio_service_.IsAudioProcessorRunning() || !audio_service_.IsVoiceStreamingEnabled()) {
                 // For auto mode, wait for playback queue to be empty before enabling voice processing
                 // This prevents audio truncation when STOP arrives late due to network jitter
                 if (listening_mode_ == kListeningModeAutoStop) {
@@ -889,7 +1246,7 @@ void Application::HandleStateChangedEvent() {
                 
                 // Send the start listening command
                 protocol_->SendStartListening(listening_mode_);
-                audio_service_.EnableVoiceProcessing(true);
+                audio_service_.EnableVoiceProcessing(true, true);
             }
 
 #ifdef CONFIG_WAKE_WORD_DETECTION_IN_LISTENING
@@ -906,17 +1263,45 @@ void Application::HandleStateChangedEvent() {
                 audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
             }
             break;
+        }
         case kDeviceStateSpeaking:
+            pending_tts_stream_start_.store(false, std::memory_order_relaxed);
+            listening_voice_seen_ = false;
+            waiting_server_reply_ = false;
+            pending_local_stop_listening_ = false;
+            listening_started_us_ = 0;
+            listening_voice_started_us_ = 0;
+            speaking_barge_in_started_us_ = 0;
             display->SetStatus(Lang::Strings::SPEAKING);
+            speaking_started_us_ = esp_timer_get_time();
+            last_incoming_audio_us_.store(speaking_started_us_, std::memory_order_relaxed);
 
+#if CONFIG_BOARD_TYPE_ROBOTCABEZA_ESP32_INMP441
+            audio_service_.SetVadSpeakerActive(true);
+            audio_service_.EnableVoiceProcessing(true, false, false);
+            audio_service_.EnableWakeWordDetection(false);
+            StartBargeInTask();
+#else
             if (listening_mode_ != kListeningModeRealtime) {
                 audio_service_.EnableVoiceProcessing(false);
                 // Only AFE wake word can be detected in speaking mode
                 audio_service_.EnableWakeWordDetection(audio_service_.IsAfeWakeWord());
             }
+#endif
+#if !CONFIG_BOARD_TYPE_ROBOTCABEZA_ESP32_INMP441
             audio_service_.ResetDecoder();
+#endif
             break;
         case kDeviceStateWifiConfiguring:
+            pending_tts_stream_start_.store(false, std::memory_order_relaxed);
+            listening_voice_seen_ = false;
+            waiting_server_reply_ = false;
+            pending_local_stop_listening_ = false;
+            pending_resume_listening_after_tts_ = false;
+            listening_started_us_ = 0;
+            speaking_barge_in_started_us_ = 0;
+            listening_voice_started_us_ = 0;
+            audio_service_.SetVadSpeakerActive(false);
             audio_service_.EnableVoiceProcessing(false);
             audio_service_.EnableWakeWordDetection(false);
             break;
@@ -955,6 +1340,9 @@ void Application::Reboot() {
     ESP_LOGI(TAG, "Rebooting...");
     // Disconnect the audio channel
     if (protocol_ && protocol_->IsAudioChannelOpened()) {
+#if CONFIG_BOARD_TYPE_ROBOTCABEZA_ESP32_INMP441
+        suppress_auto_relisten_once_ = true;
+#endif
         protocol_->CloseAudioChannel();
     }
     protocol_.reset();
@@ -974,6 +1362,9 @@ bool Application::UpgradeFirmware(const std::string& url, const std::string& ver
     // Close audio channel if it's open
     if (protocol_ && protocol_->IsAudioChannelOpened()) {
         ESP_LOGI(TAG, "Closing audio channel before firmware upgrade");
+#if CONFIG_BOARD_TYPE_ROBOTCABEZA_ESP32_INMP441
+        suppress_auto_relisten_once_ = true;
+#endif
         protocol_->CloseAudioChannel();
     }
     ESP_LOGI(TAG, "Starting firmware upgrade from URL: %s", upgrade_url.c_str());
@@ -1097,6 +1488,9 @@ void Application::SetAecMode(AecMode mode) {
 
         // If the AEC mode is changed, close the audio channel
         if (protocol_ && protocol_->IsAudioChannelOpened()) {
+#if CONFIG_BOARD_TYPE_ROBOTCABEZA_ESP32_INMP441
+            suppress_auto_relisten_once_ = true;
+#endif
             protocol_->CloseAudioChannel();
         }
     });
@@ -1106,10 +1500,19 @@ void Application::PlaySound(const std::string_view& sound) {
     audio_service_.PlaySound(sound);
 }
 
+void Application::StopAudioPlayback() {
+    Schedule([this]() {
+        StopAudioPlaybackOnMainThread();
+    });
+}
+
 void Application::ResetProtocol() {
     Schedule([this]() {
         // Close audio channel if opened
         if (protocol_ && protocol_->IsAudioChannelOpened()) {
+#if CONFIG_BOARD_TYPE_ROBOTCABEZA_ESP32_INMP441
+            suppress_auto_relisten_once_ = true;
+#endif
             protocol_->CloseAudioChannel();
         }
         // Reset protocol

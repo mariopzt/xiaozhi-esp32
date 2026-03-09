@@ -85,6 +85,7 @@ bool WebsocketProtocol::OpenAudioChannel() {
     std::string url = settings.GetString("url");
     std::string token = settings.GetString("token");
     int version = settings.GetInt("version");
+
     if (version != 0) {
         version_ = version;
     }

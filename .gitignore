@@ -9,6 +9,10 @@ sdkconfig.old
 sdkconfig
 dependencies.lock
 .env
+backend/.env
+backend/.venv/
+backend/__pycache__/
+backend/**/__pycache__/
 releases/
 main/assets/lang_config.h
 main/mmap_generate_emoji.h

@@ -3,8 +3,29 @@
 #include <esp_log.h>
 #include <cmath>
 #include <cstring>
+#include <cstdlib>
 
 #define TAG "NoAudioCodec"
+
+static int16_t ConvertI2s32ToI16(int32_t raw_value, float input_gain) {
+    int32_t value = raw_value >>
+#if CONFIG_BOARD_TYPE_ROBOTCABEZA_ESP32_INMP441
+        12;
+#else
+        12;
+#endif
+    if (input_gain > 0.0f) {
+        int64_t amplified = static_cast<int64_t>(value * input_gain);
+        if (amplified > INT16_MAX) {
+            value = INT16_MAX;
+        } else if (amplified < INT16_MIN) {
+            value = INT16_MIN;
+        } else {
+            value = static_cast<int32_t>(amplified);
+        }
+    }
+    return (value > INT16_MAX) ? INT16_MAX : (value < -INT16_MAX) ? -INT16_MAX : static_cast<int16_t>(value);
+}
 
 NoAudioCodec::~NoAudioCodec() {
     if (rx_handle_ != nullptr) {
@@ -205,12 +226,14 @@ NoAudioCodecSimplex::NoAudioCodecSimplex(int input_sample_rate, int output_sampl
     chan_cfg.id = (i2s_port_t)1;
     ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, nullptr, &rx_handle_));
     std_cfg.clk_cfg.sample_rate_hz = (uint32_t)input_sample_rate_;
+    std_cfg.slot_cfg.slot_mode = mic_slot_mask == I2S_STD_SLOT_BOTH ? I2S_SLOT_MODE_STEREO : I2S_SLOT_MODE_MONO;
     std_cfg.slot_cfg.slot_mask = mic_slot_mask;
     std_cfg.gpio_cfg.bclk = mic_sck;
     std_cfg.gpio_cfg.ws = mic_ws;
     std_cfg.gpio_cfg.dout = I2S_GPIO_UNUSED;
     std_cfg.gpio_cfg.din = mic_din;
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(rx_handle_, &std_cfg));
+    rx_capture_stereo_ = mic_slot_mask == I2S_STD_SLOT_BOTH;
     ESP_LOGI(TAG, "Simplex channels created");
 }
 
@@ -241,17 +264,51 @@ int NoAudioCodec::Read(int16_t* dest, int samples) {
     size_t bytes_read;
     constexpr TickType_t kReadTimeoutTicks = pdMS_TO_TICKS(200);
 
-    std::vector<int32_t> bit32_buffer(samples);
-    if (i2s_channel_read(rx_handle_, bit32_buffer.data(), samples * sizeof(int32_t), &bytes_read, kReadTimeoutTicks) != ESP_OK) {
+    size_t channels = rx_capture_stereo_ ? 2 : 1;
+    std::vector<int32_t> bit32_buffer(samples * channels);
+    if (i2s_channel_read(rx_handle_, bit32_buffer.data(), bit32_buffer.size() * sizeof(int32_t), &bytes_read, kReadTimeoutTicks) != ESP_OK) {
         return 0;
     }
 
-    samples = bytes_read / sizeof(int32_t);
-    for (int i = 0; i < samples; i++) {
-        int32_t value = bit32_buffer[i] >> 12;
-        dest[i] = (value > INT16_MAX) ? INT16_MAX : (value < -INT16_MAX) ? -INT16_MAX : (int16_t)value;
+    if (!rx_capture_stereo_) {
+        samples = bytes_read / sizeof(int32_t);
+        for (int i = 0; i < samples; i++) {
+            dest[i] = ConvertI2s32ToI16(bit32_buffer[i], input_gain_);
+        }
+        return samples;
     }
-    return samples;
+
+    size_t frames = bytes_read / (sizeof(int32_t) * 2);
+    int64_t left_energy = 0;
+    int64_t right_energy = 0;
+    int left_clipped = 0;
+    int right_clipped = 0;
+    std::vector<int16_t> left_frame(frames);
+    std::vector<int16_t> right_frame(frames);
+
+    for (size_t i = 0; i < frames; ++i) {
+        int16_t left = ConvertI2s32ToI16(bit32_buffer[i * 2], input_gain_);
+        int16_t right = ConvertI2s32ToI16(bit32_buffer[i * 2 + 1], input_gain_);
+        left_frame[i] = left;
+        right_frame[i] = right;
+        left_energy += std::abs(static_cast<int>(left));
+        right_energy += std::abs(static_cast<int>(right));
+        left_clipped += (left == INT16_MAX || left == -INT16_MAX) ? 1 : 0;
+        right_clipped += (right == INT16_MAX || right == -INT16_MAX) ? 1 : 0;
+    }
+
+    bool use_right = false;
+    if (left_clipped != right_clipped) {
+        use_right = right_clipped < left_clipped;
+    } else if (left_energy != right_energy) {
+        use_right = right_energy > left_energy;
+    }
+
+    const auto& selected = use_right ? right_frame : left_frame;
+    for (size_t i = 0; i < frames; ++i) {
+        dest[i] = selected[i];
+    }
+    return static_cast<int>(frames);
 }
 
 void NoAudioCodec::EnableInput(bool enable) {
