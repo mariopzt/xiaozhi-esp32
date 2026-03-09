@@ -22,8 +22,8 @@
 #define TAG "Application"
 
 namespace {
-constexpr int64_t kTtsStreamQuietUs = 1200000;
-constexpr int kTtsPlaybackTailMs = 500;
+constexpr int64_t kTtsStreamQuietUs = 350000;
+constexpr int kTtsPlaybackTailMs = 120;
 constexpr int kBargeInMinLevel = 340;
 constexpr int kBargeInFloorMargin = 180;
 constexpr int64_t kBargeInCalibrationUs = 220000;
@@ -598,6 +598,11 @@ void Application::InitializeProtocol() {
             // Block briefly instead of dropping late TTS packets when the speaker path
             // is still draining. Dropping here truncates whole sentences.
             audio_service_.PushPacketToDecodeQueue(std::move(packet), true);
+#if CONFIG_BOARD_TYPE_ROBOTCABEZA_ESP32_INMP441
+            if (GetDeviceState() == kDeviceStateSpeaking) {
+                StartBargeInTask();
+            }
+#endif
         }
     });
     
@@ -1280,7 +1285,6 @@ void Application::HandleStateChangedEvent() {
             audio_service_.SetVadSpeakerActive(true);
             audio_service_.EnableVoiceProcessing(true, false, false);
             audio_service_.EnableWakeWordDetection(false);
-            StartBargeInTask();
 #else
             if (listening_mode_ != kListeningModeRealtime) {
                 audio_service_.EnableVoiceProcessing(false);

@@ -26,8 +26,8 @@ SET model_name = 'OpenAI GPT-4.1 nano',
         'model_name', 'gpt-4.1-nano',
         'base_url', 'https://api.openai.com/v1',
         'api_key', '$openAiKey',
-        'temperature', 0.7,
-        'max_tokens', 500,
+        'temperature', 0.35,
+        'max_tokens', 140,
         'top_p', 1,
         'frequency_penalty', 0
     )
@@ -38,7 +38,8 @@ SET config_json = JSON_OBJECT(
         'type', 'openai',
         'api_key', '$openAiKey',
         'base_url', 'https://api.openai.com/v1/audio/transcriptions',
-        'model_name', 'gpt-4o-mini-transcribe',
+        'model_name', 'gpt-4o-transcribe',
+        'language', 'es',
         'output_dir', 'tmp/'
     )
 WHERE id = 'ASR_OpenaiASR';
@@ -49,9 +50,10 @@ SET config_json = JSON_OBJECT(
         'api_key', '$openAiKey',
         'api_url', 'https://api.openai.com/v1/audio/speech',
         'model', 'tts-1',
-        'voice', 'nova',
+        'voice', 'shimmer',
         'format', 'wav',
-        'speed', 1.08,
+        'speed', 1.0,
+        'language', 'espanol',
         'output_dir', 'tmp/'
     )
 WHERE id = 'TTS_OpenAITTS';
@@ -62,8 +64,8 @@ INSERT INTO ai_tts_voice (
     reference_audio, reference_text, sort, creator, create_date, updater, update_date
 )
 VALUES
-    ('TTS_OpenAITTS_ES0001', 'TTS_OpenAITTS', 'OpenAI ES Nova', 'nova', 'Espanol', NULL, NULL, NULL, NULL, 50, NULL, NULL, NULL, NULL),
-    ('TTS_OpenAITTS_ES0002', 'TTS_OpenAITTS', 'OpenAI ES Shimmer', 'shimmer', 'Espanol', NULL, NULL, NULL, NULL, 51, NULL, NULL, NULL, NULL);
+    ('TTS_OpenAITTS_ES0001', 'TTS_OpenAITTS', 'OpenAI ES Shimmer', 'shimmer', 'Espanol', NULL, NULL, NULL, NULL, 50, NULL, NULL, NULL, NULL),
+    ('TTS_OpenAITTS_ES0002', 'TTS_OpenAITTS', 'OpenAI ES Nova', 'nova', 'Espanol', NULL, NULL, NULL, NULL, 51, NULL, NULL, NULL, NULL);
 
 UPDATE ai_agent
 SET agent_name = 'marioia',
@@ -75,7 +77,7 @@ SET agent_name = 'marioia',
     intent_model_id = 'Intent_function_call',
     lang_code = 'es',
     language = 'es-ES',
-    system_prompt = 'Eres mario ia, un asistente de inteligencia artificial amigable que habla espanol de forma natural. Tu personalidad es cercana, curiosa y relajada. Hablas como un amigo con el usuario, manteniendo conversaciones naturales sobre tecnologia, programacion, proyectos, inteligencia artificial y temas cotidianos. Tu objetivo es mantener conversaciones utiles y agradables. Siempre respondes en espanol.'
+    system_prompt = 'Eres mario ia, un asistente de inteligencia artificial amigable que habla espanol de forma natural. Tu personalidad es cercana, curiosa y relajada. Hablas como un amigo con el usuario. Responde siempre en espanol, con frases cortas, directas y utiles. Evita dar rodeos, evita repetir ideas y evita respuestas largas salvo que el usuario lo pida.'
 WHERE id = '$agentId';
 "@
 

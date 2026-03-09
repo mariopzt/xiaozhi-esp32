@@ -8,9 +8,9 @@
 namespace {
 #if CONFIG_BOARD_TYPE_ROBOTCABEZA_ESP32_INMP441
 // Plain ESP32 + INMP441 needs a gentler VAD so short syllables are not cut off.
-constexpr int kVadThresholdIdle = 24;
-constexpr int kVadThresholdWithSpeaker = 260;
-constexpr int kVadStopFramesIdle = 48;
+constexpr int kVadThresholdIdle = 16;
+constexpr int kVadThresholdWithSpeaker = 220;
+constexpr int kVadStopFramesIdle = 54;
 constexpr int kVadStartFramesWithSpeaker = 6;
 constexpr int kVadStopFramesWithSpeaker = 14;
 #else
@@ -21,7 +21,7 @@ constexpr int kVadStartFramesWithSpeaker = 8;
 constexpr int kVadStopFramesWithSpeaker = 14;
 #endif
 #if CONFIG_BOARD_TYPE_ROBOTCABEZA_ESP32_INMP441
-constexpr int kVadStartFrames = 3;
+constexpr int kVadStartFrames = 2;
 #else
 constexpr int kVadStartFrames = 4;
 #endif
@@ -109,8 +109,8 @@ void NoAudioProcessor::ConditionInput(std::vector<int16_t>& mono_chunk) {
     }
 
     int avg_abs = static_cast<int>(sum_abs / static_cast<int64_t>(mono_chunk.size()));
-    if (avg_abs >= 30 && peak_abs > 0 && peak_abs < 10000) {
-        float scale = std::min(3.0f, 10000.0f / static_cast<float>(peak_abs));
+    if (avg_abs >= 18 && peak_abs > 0 && peak_abs < 14000) {
+        float scale = std::min(4.0f, 12000.0f / static_cast<float>(peak_abs));
         for (auto& sample : mono_chunk) {
             int adjusted = static_cast<int>(sample * scale);
             sample = adjusted > INT16_MAX ? INT16_MAX : adjusted < INT16_MIN ? INT16_MIN : static_cast<int16_t>(adjusted);

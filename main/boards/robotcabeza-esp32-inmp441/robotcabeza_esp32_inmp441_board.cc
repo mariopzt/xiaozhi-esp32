@@ -97,7 +97,7 @@ public:
         );
         static bool tuned = false;
         if (!tuned) {
-            audio_codec.SetInputGain(5.0f);
+            audio_codec.SetInputGain(8.0f);
             tuned = true;
         }
         return &audio_codec;
