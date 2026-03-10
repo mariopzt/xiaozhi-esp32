@@ -13,6 +13,7 @@ constexpr int kVadThresholdWithSpeaker = 5200;
 constexpr int kVadStopFramesIdle = 54;
 constexpr int kVadStartFramesWithSpeaker = 6;
 constexpr int kVadStopFramesWithSpeaker = 14;
+constexpr int kInputNoiseGateAbs = 120;
 #else
 constexpr int kVadThresholdIdle = 600;
 constexpr int kVadThresholdWithSpeaker = 1800;
@@ -96,6 +97,9 @@ void NoAudioProcessor::ConditionInput(std::vector<int16_t>& mono_chunk) {
     int dc_offset = static_cast<int>(sum / static_cast<int64_t>(mono_chunk.size()));
     for (auto& sample : mono_chunk) {
         int adjusted = static_cast<int>(sample) - dc_offset;
+        if (std::abs(adjusted) < kInputNoiseGateAbs) {
+            adjusted = 0;
+        }
         sample = adjusted > INT16_MAX ? INT16_MAX : adjusted < INT16_MIN ? INT16_MIN : static_cast<int16_t>(adjusted);
     }
 
@@ -110,8 +114,10 @@ void NoAudioProcessor::ConditionInput(std::vector<int16_t>& mono_chunk) {
     }
 
     int avg_abs = static_cast<int>(sum_abs / static_cast<int64_t>(mono_chunk.size()));
-    if (avg_abs >= 600 && peak_abs > 0 && peak_abs < 10000) {
-        float scale = std::min(1.35f, 10000.0f / static_cast<float>(peak_abs));
+    if (avg_abs >= 350 && peak_abs > 0 && peak_abs < 9000) {
+        float max_scale = avg_abs < 700 ? 1.12f : 1.06f;
+        float target_peak = avg_abs < 700 ? 9000.0f : 8000.0f;
+        float scale = std::min(max_scale, target_peak / static_cast<float>(peak_abs));
         for (auto& sample : mono_chunk) {
             int adjusted = static_cast<int>(sample * scale);
             sample = adjusted > INT16_MAX ? INT16_MAX : adjusted < INT16_MIN ? INT16_MIN : static_cast<int16_t>(adjusted);
@@ -119,8 +125,8 @@ void NoAudioProcessor::ConditionInput(std::vector<int16_t>& mono_chunk) {
         peak_abs = static_cast<int>(peak_abs * scale);
     }
 
-    if (peak_abs > 12000) {
-        float scale = 12000.0f / static_cast<float>(peak_abs);
+    if (peak_abs > 9000) {
+        float scale = 9000.0f / static_cast<float>(peak_abs);
         for (auto& sample : mono_chunk) {
             int adjusted = static_cast<int>(sample * scale);
             sample = adjusted > INT16_MAX ? INT16_MAX : adjusted < INT16_MIN ? INT16_MIN : static_cast<int16_t>(adjusted);

@@ -17,6 +17,7 @@ public:
     void Remember(const std::string& note);
     void SyncToBackend();
     void SyncToBackendAsync();
+    void RefreshFromBackend();
     void LearnFromUserText(const std::string& text);
     void AppendConversationLine(const char* speaker, const std::string& text);
     void Clear();
@@ -34,7 +35,7 @@ private:
     std::string ExtractRememberNote(const std::string& text) const;
     std::string ExtractAgeFact(const std::string& text) const;
     std::vector<std::string> ExtractProfileFacts(const std::string& text) const;
-    cJSON* BuildContextJson(const std::string& user_name, const std::string& notes, const std::string& recent_turns) const;
+    cJSON* BuildContextJson(const std::string& user_name, const std::string& notes, const std::string& recent_turns, const std::string& combined_context = "") const;
     std::string GetNotes() const;
     std::string GetRecentTurns() const;
     std::string GetUserName() const;
@@ -42,6 +43,7 @@ private:
     void SetRecentTurns(const std::string& turns);
     void SetUserName(const std::string& user_name);
     bool SyncSnapshotToBackend();
+    bool FetchContextFromBackend(const std::string& query, std::string& user_name, std::string& notes, std::string& recent_turns, std::string& combined_context);
     bool MergeContextFromBackend(const std::string& query);
     std::string GetDeviceId() const;
     std::string MergeUniqueLines(const std::string& primary, const std::string& secondary, size_t max_chars) const;

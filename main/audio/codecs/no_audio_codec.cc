@@ -10,7 +10,7 @@
 static int16_t ConvertI2s32ToI16(int32_t raw_value, float input_gain) {
     int32_t value = raw_value >>
 #if CONFIG_BOARD_TYPE_ROBOTCABEZA_ESP32_INMP441
-        12;
+        14;
 #else
         12;
 #endif

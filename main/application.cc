@@ -372,6 +372,14 @@ void Application::HandleNetworkConnectedEvent() {
     auto state = GetDeviceState();
     auto& board = Board::GetInstance();
 
+    xTaskCreate([](void* arg) {
+        auto* app = static_cast<Application*>(arg);
+        (void)app;
+        vTaskDelay(pdMS_TO_TICKS(1500));
+        MemoryStore::GetInstance().RefreshFromBackend();
+        vTaskDelete(nullptr);
+    }, "memory_prefetch", 4096, this, 1, nullptr);
+
     if (state == kDeviceStateStarting || state == kDeviceStateWifiConfiguring) {
         board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
         // Network is ready, start activation
@@ -651,7 +659,8 @@ void Application::InitializeProtocol() {
             bool should_auto_relisten =
                 !suppress_auto_relisten_once_ &&
                 WifiManager::GetInstance().IsConnected() &&
-                (previous_state == kDeviceStateConnecting ||
+                (previous_state == kDeviceStateIdle ||
+                 previous_state == kDeviceStateConnecting ||
                  previous_state == kDeviceStateListening ||
                  previous_state == kDeviceStateSpeaking);
             suppress_auto_relisten_once_ = false;

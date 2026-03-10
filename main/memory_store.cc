@@ -17,8 +17,8 @@
 namespace {
 constexpr size_t kMaxNotesChars = 1200;
 constexpr size_t kMaxRecentTurnsChars = 2800;
-constexpr const char* kMemorySyncBaseUrl = "http://192.168.1.132:8787";
-constexpr int kMemorySyncTimeoutSeconds = 2;
+constexpr const char* kMemorySyncBaseUrl = "https://xiaozhi-esp32-production.up.railway.app";
+constexpr int kMemorySyncTimeoutSeconds = 3;
 constexpr int kMemorySyncDebounceMs = 1200;
 constexpr int kMemorySyncRetryMs = 2500;
 
@@ -68,32 +68,34 @@ MemoryStore& MemoryStore::GetInstance() {
     return instance;
 }
 
-cJSON* MemoryStore::BuildContextJson(const std::string& user_name, const std::string& notes, const std::string& recent_turns) const {
+cJSON* MemoryStore::BuildContextJson(const std::string& user_name, const std::string& notes, const std::string& recent_turns, const std::string& combined_context_override) const {
     cJSON* json = cJSON_CreateObject();
     cJSON_AddStringToObject(json, "user_name", user_name.c_str());
     cJSON_AddStringToObject(json, "notes", notes.c_str());
     cJSON_AddStringToObject(json, "recent_turns", recent_turns.c_str());
 
-    std::string combined_context;
-    if (!user_name.empty()) {
-        combined_context += "Known user identity:\n";
-        combined_context += "The user's name is ";
-        combined_context += user_name;
-        combined_context += ".";
-    }
-    if (!notes.empty()) {
-        if (!combined_context.empty()) {
-            combined_context += "\n\n";
+    std::string combined_context = combined_context_override;
+    if (combined_context.empty()) {
+        if (!user_name.empty()) {
+            combined_context += "Known user identity:\n";
+            combined_context += "The user's name is ";
+            combined_context += user_name;
+            combined_context += ".";
         }
-        combined_context += "Saved long-term memory:\n";
-        combined_context += notes;
-    }
-    if (!recent_turns.empty()) {
-        if (!combined_context.empty()) {
-            combined_context += "\n\n";
+        if (!notes.empty()) {
+            if (!combined_context.empty()) {
+                combined_context += "\n\n";
+            }
+            combined_context += "Saved long-term memory:\n";
+            combined_context += notes;
         }
-        combined_context += "Recent cross-session conversation:\n";
-        combined_context += recent_turns;
+        if (!recent_turns.empty()) {
+            if (!combined_context.empty()) {
+                combined_context += "\n\n";
+            }
+            combined_context += "Recent cross-session conversation:\n";
+            combined_context += recent_turns;
+        }
     }
     if (!combined_context.empty()) {
         combined_context += "\n\nUse this context only when it is relevant to the user's current request.";
@@ -103,25 +105,41 @@ cJSON* MemoryStore::BuildContextJson(const std::string& user_name, const std::st
 }
 
 cJSON* MemoryStore::GetContextJson() {
-    SyncSnapshotToBackend();
-    MergeContextFromBackend("");
-    return BuildContextJson(GetUserName(), GetNotes(), GetRecentTurns());
+    SyncToBackendAsync();
+    std::string user_name = GetUserName();
+    std::string notes = GetNotes();
+    std::string recent_turns = GetRecentTurns();
+    std::string combined_context;
+    if (FetchContextFromBackend("", user_name, notes, recent_turns, combined_context)) {
+        return BuildContextJson(user_name, notes, recent_turns, combined_context);
+    }
+    return BuildContextJson(user_name, notes, recent_turns);
 }
 
 cJSON* MemoryStore::GetUserProfileJson() {
-    SyncSnapshotToBackend();
-    MergeContextFromBackend("");
+    SyncToBackendAsync();
+    std::string user_name = GetUserName();
+    std::string notes = GetNotes();
+    std::string recent_turns = GetRecentTurns();
+    std::string combined_context;
+    FetchContextFromBackend("", user_name, notes, recent_turns, combined_context);
 
     cJSON* json = cJSON_CreateObject();
-    cJSON_AddStringToObject(json, "user_name", GetUserName().c_str());
-    cJSON_AddStringToObject(json, "notes", GetNotes().c_str());
+    cJSON_AddStringToObject(json, "user_name", user_name.c_str());
+    cJSON_AddStringToObject(json, "notes", notes.c_str());
     return json;
 }
 
 cJSON* MemoryStore::SearchContextJson(const std::string& query) {
-    SyncSnapshotToBackend();
-    MergeContextFromBackend(query);
-    return BuildContextJson(GetUserName(), GetNotes(), GetRecentTurns());
+    SyncToBackendAsync();
+    std::string user_name = GetUserName();
+    std::string notes = GetNotes();
+    std::string recent_turns = GetRecentTurns();
+    std::string combined_context;
+    if (FetchContextFromBackend(query, user_name, notes, recent_turns, combined_context)) {
+        return BuildContextJson(user_name, notes, recent_turns, combined_context);
+    }
+    return BuildContextJson(user_name, notes, recent_turns);
 }
 
 void MemoryStore::Remember(const std::string& note) {
@@ -191,6 +209,14 @@ void MemoryStore::SyncToBackendAsync() {
         sync_task_running_.store(false, std::memory_order_relaxed);
         ESP_LOGE(TAG, "Failed to create memory sync task");
     }
+}
+
+void MemoryStore::RefreshFromBackend() {
+    std::string user_name = GetUserName();
+    std::string notes = GetNotes();
+    std::string recent_turns = GetRecentTurns();
+    std::string combined_context;
+    FetchContextFromBackend("", user_name, notes, recent_turns, combined_context);
 }
 
 void MemoryStore::LearnFromUserText(const std::string& text) {
@@ -287,13 +313,6 @@ void MemoryStore::RememberExtractedFacts(const std::string& text) {
         Remember(fact);
     }
 
-    if (user_name.empty() &&
-        remembered_note.empty() &&
-        age_fact.empty() &&
-        profile_facts.empty() &&
-        normalized.size() <= 96) {
-        Remember(normalized);
-    }
 }
 
 void MemoryStore::AppendConversationLine(const char* speaker, const std::string& text) {
@@ -324,6 +343,14 @@ void MemoryStore::AppendConversationLine(const char* speaker, const std::string&
 void MemoryStore::Clear() {
     Settings settings(kSettingsNamespace, true);
     settings.EraseAll();
+    auto http = Board::GetInstance().GetNetwork()->CreateHttp(kMemorySyncTimeoutSeconds);
+    if (http != nullptr) {
+        std::string url = std::string(kMemorySyncBaseUrl) + "/memory-sync/clear/" + GetDeviceId();
+        if (http->Open("POST", url)) {
+            http->ReadAll();
+            http->Close();
+        }
+    }
     ESP_LOGI(TAG, "Cleared persisted memory");
 }
 
@@ -630,7 +657,7 @@ bool MemoryStore::SyncSnapshotToBackend() {
     return status >= 200 && status < 300;
 }
 
-bool MemoryStore::MergeContextFromBackend(const std::string& query) {
+bool MemoryStore::FetchContextFromBackend(const std::string& query, std::string& user_name, std::string& notes, std::string& recent_turns, std::string& combined_context) {
     auto http = Board::GetInstance().GetNetwork()->CreateHttp(kMemorySyncTimeoutSeconds);
     if (http == nullptr) {
         return false;
@@ -657,23 +684,28 @@ bool MemoryStore::MergeContextFromBackend(const std::string& query) {
         return false;
     }
 
-    std::string merged_name = GetUserName();
-    std::string merged_notes = GetNotes();
-    std::string merged_turns = GetRecentTurns();
+    std::string merged_name = user_name;
+    std::string merged_notes = notes;
+    std::string merged_turns = recent_turns;
 
-    auto user_name = cJSON_GetObjectItem(root, "user_name");
-    if (merged_name.empty() && cJSON_IsString(user_name) && user_name->valuestring != nullptr) {
-        merged_name = user_name->valuestring;
+    auto user_name_item = cJSON_GetObjectItem(root, "user_name");
+    if (merged_name.empty() && cJSON_IsString(user_name_item) && user_name_item->valuestring != nullptr) {
+        merged_name = user_name_item->valuestring;
     }
 
-    auto notes = cJSON_GetObjectItem(root, "notes");
-    if (cJSON_IsString(notes) && notes->valuestring != nullptr) {
-        merged_notes = MergeUniqueLines(merged_notes, notes->valuestring, kMaxNotesChars);
+    auto notes_item = cJSON_GetObjectItem(root, "notes");
+    if (cJSON_IsString(notes_item) && notes_item->valuestring != nullptr) {
+        merged_notes = MergeUniqueLines(merged_notes, notes_item->valuestring, kMaxNotesChars);
     }
 
-    auto recent_turns = cJSON_GetObjectItem(root, "recent_turns");
-    if (cJSON_IsString(recent_turns) && recent_turns->valuestring != nullptr) {
-        merged_turns = MergeUniqueLines(merged_turns, recent_turns->valuestring, kMaxRecentTurnsChars);
+    auto recent_turns_item = cJSON_GetObjectItem(root, "recent_turns");
+    if (cJSON_IsString(recent_turns_item) && recent_turns_item->valuestring != nullptr) {
+        merged_turns = MergeUniqueLines(merged_turns, recent_turns_item->valuestring, kMaxRecentTurnsChars);
+    }
+
+    auto combined_context_item = cJSON_GetObjectItem(root, "combined_context");
+    if (cJSON_IsString(combined_context_item) && combined_context_item->valuestring != nullptr) {
+        combined_context = combined_context_item->valuestring;
     }
 
     cJSON_Delete(root);
@@ -687,7 +719,18 @@ bool MemoryStore::MergeContextFromBackend(const std::string& query) {
     if (merged_turns != GetRecentTurns()) {
         SetRecentTurns(merged_turns);
     }
+    user_name = merged_name;
+    notes = merged_notes;
+    recent_turns = merged_turns;
     return true;
+}
+
+bool MemoryStore::MergeContextFromBackend(const std::string& query) {
+    std::string user_name = GetUserName();
+    std::string notes = GetNotes();
+    std::string recent_turns = GetRecentTurns();
+    std::string combined_context;
+    return FetchContextFromBackend(query, user_name, notes, recent_turns, combined_context);
 }
 
 std::string MemoryStore::GetDeviceId() const {
