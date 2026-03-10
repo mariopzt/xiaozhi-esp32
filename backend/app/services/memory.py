@@ -383,6 +383,8 @@ class MemoryService:
                 text=normalized,
                 device_id=user_id,
             )
+            if role == "user":
+                await self.learn_from_user_text(user_id, normalized)
 
     async def remember_note(self, user_id: str, note: str) -> None:
         normalized = self._normalize_text(note)
