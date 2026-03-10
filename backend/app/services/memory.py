@@ -300,8 +300,8 @@ class MemoryService:
             upsert=True,
         )
 
-    async def export_device_memory(self, user_id: str) -> dict[str, str]:
-        context = await self.get_context(user_id, "")
+    async def export_device_memory(self, user_id: str, query: str = "") -> dict[str, str]:
+        context = await self.get_context(user_id, query)
         profile = context.profile or {}
         user_name = str(profile.get("name") or "").strip()
 
@@ -327,6 +327,7 @@ class MemoryService:
             "user_name": user_name,
             "notes": "\n".join(notes_lines),
             "recent_turns": "\n".join(recent_lines),
+            "combined_context": self.render_context_block(context),
         }
 
     async def import_device_snapshot(
@@ -335,6 +336,7 @@ class MemoryService:
         *,
         user_name: str = "",
         notes: str = "",
+        recent_turns: str = "",
     ) -> None:
         clean_name = " ".join((user_name or "").split()).strip()
         now = utc_now()
@@ -350,6 +352,43 @@ class MemoryService:
             if not line:
                 continue
             await self._store_memory(user_id, line, "device_snapshot")
+
+        for raw_line in (recent_turns or "").splitlines():
+            line = " ".join(raw_line.split()).strip()
+            if len(line) < 4 or line[1:3] != ": ":
+                continue
+            speaker = line[0].upper()
+            role = "user" if speaker == "U" else "assistant"
+            text = line[3:].strip()
+            normalized = self._normalize_text(text)
+            if not normalized:
+                continue
+
+            existing = await self._turns.find_one(
+                {
+                    "user_id": user_id,
+                    "session_id": "device_snapshot",
+                    "role": role,
+                    "normalized_text": normalized.casefold(),
+                },
+                {"_id": 1},
+            )
+            if existing is not None:
+                continue
+
+            await self.save_turn(
+                user_id=user_id,
+                session_id="device_snapshot",
+                role=role,
+                text=normalized,
+                device_id=user_id,
+            )
+
+    async def remember_note(self, user_id: str, note: str) -> None:
+        normalized = self._normalize_text(note)
+        if not normalized:
+            return
+        await self._store_memory(user_id, normalized, "device_remember")
 
     async def _next_turn_index(self, user_id: str, session_id: str) -> int:
         last_turn = await self._turns.find_one(
@@ -606,7 +645,7 @@ class MemoryService:
             updates["work"] = work_match.group(2).strip(" .")[:60]
 
         relation_patterns = {
-            "partner_name": r"\bmi (?:pareja|novia|novio|esposa|esposo)\s+se llama\s+([A-Za-z\u00c1-\u00ff' -]{1,40})",
+            "partner_name": r"\bmi (?:pareja|novia|novio|mujer|esposa|esposo)\s+se llama\s+([A-Za-z\u00c1-\u00ff' -]{1,40})",
             "mother_name": r"\bmi madre\s+se llama\s+([A-Za-z\u00c1-\u00ff' -]{1,40})",
             "father_name": r"\bmi padre\s+se llama\s+([A-Za-z\u00c1-\u00ff' -]{1,40})",
             "sister_name": r"\bmi hermana\s+se llama\s+([A-Za-z\u00c1-\u00ff' -]{1,40})",
@@ -620,6 +659,14 @@ class MemoryService:
             match = re.search(pattern, text, re.IGNORECASE)
             if match:
                 updates[key] = " ".join(match.group(1).split())[:40]
+
+        partner_name_match = re.search(
+            r"\bel nombre de mi (?:mujer|esposa|esposo|pareja) es\s+([A-Za-z\u00c1-\u00ff' -]{1,40})",
+            text,
+            re.IGNORECASE,
+        )
+        if partner_name_match:
+            updates["partner_name"] = " ".join(partner_name_match.group(1).split())[:40]
 
         return updates
 
@@ -710,7 +757,15 @@ class MemoryService:
             r"^(mi cumplea(?:n|ñ)os es\s+.+)$",
             r"^(mi pareja se llama\s+.+)$",
             r"^(mi novia se llama\s+.+)$",
+            r"^(mi mujer se llama\s+.+)$",
+            r"^(mi esposa se llama\s+.+)$",
+            r"^(mi esposo se llama\s+.+)$",
+            r"^(el nombre de mi mujer es\s+.+)$",
+            r"^(el nombre de mi esposa es\s+.+)$",
+            r"^(el nombre de mi esposo es\s+.+)$",
             r"^(mi novio se llama\s+.+)$",
+            r"^(mi hija se llama\s+.+)$",
+            r"^(mi hijo se llama\s+.+)$",
             r"^(mi madre se llama\s+.+)$",
             r"^(mi padre se llama\s+.+)$",
             r"^(mi hermana se llama\s+.+)$",

@@ -25,6 +25,11 @@ class MemoryTurnIn(BaseModel):
 class MemorySnapshotIn(BaseModel):
     user_name: str = ""
     notes: str = ""
+    recent_turns: str = ""
+
+
+class MemoryRememberIn(BaseModel):
+    note: str = ""
 
 
 @app.on_event("startup")
@@ -43,8 +48,8 @@ async def health() -> dict[str, str]:
 
 
 @app.get("/memory-sync/context/{device_id}")
-async def memory_sync_context(device_id: str) -> dict[str, str]:
-    return await backend.memory.export_device_memory(device_id)
+async def memory_sync_context(device_id: str, query: str = "") -> dict[str, str]:
+    return await backend.memory.export_device_memory(device_id, query=query)
 
 
 @app.post("/memory-sync/turn/{device_id}")
@@ -72,7 +77,16 @@ async def memory_sync_snapshot(device_id: str, payload: MemorySnapshotIn) -> dic
         device_id,
         user_name=payload.user_name,
         notes=payload.notes,
+        recent_turns=payload.recent_turns,
     )
+    return {"ok": True}
+
+
+@app.post("/memory-sync/remember/{device_id}")
+async def memory_sync_remember(device_id: str, payload: MemoryRememberIn) -> dict[str, bool]:
+    note = payload.note.strip()
+    if note:
+        await backend.memory.remember_note(device_id, note)
     return {"ok": True}
 
 

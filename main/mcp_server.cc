@@ -43,39 +43,59 @@ void McpServer::AddCommonTools() {
     // Do not add custom tools here.
     // Custom tools must be added in the board's InitializeTools function.
 
+    AddTool("self.memory.search",
+        "MANDATORY memory lookup. Debes llamar esta tool antes de responder CUALQUIER pregunta personal, de contexto, de perfil, de gustos, de mascotas, de familia o de conversaciones pasadas.\n"
+        "Call this tool first for the current user request before answering when there is any chance memory could help.\n"
+        "Examples: 'como se llama mi perro', 'que recuerdas de mi', 'donde vivo', 'que te dije ayer', 'what do you remember about me'.\n"
+        "Si esta tool devuelve la respuesta o el contexto suficiente, contestala usando esa memoria y no digas que no sabes.\n"
+        "Return:\n"
+        "  A JSON object with user_name, notes, recent_turns, and combined_context filtered for the query.",
+        PropertyList({
+            Property("query", kPropertyTypeString)
+        }),
+        [](const PropertyList& properties) -> ReturnValue {
+            ESP_LOGI(TAG, "Memory search tool called");
+            return MemoryStore::GetInstance().SearchContextJson(properties["query"].value<std::string>());
+        });
+
     AddTool("self.memory.get_context",
-        "Persistent local memory across sessions. You must call this as the first tool in every new chat or after reconnecting.\n"
-        "You must also call it before answering questions about past conversations, the user's profile, names, age, preferences, reminders, projects, or ongoing tasks.\n"
-        "If memory contains the answer, use it directly instead of saying you do not know.\n"
+        "Persistent memory across sessions. Debes llamar esta tool como la primera en cada chat nuevo o tras reconectar.\n"
+        "Use it to load broad memory context before answering questions about past conversations, the user's profile, names, age, preferences, reminders, projects, pets, family, or ongoing tasks.\n"
+        "Si la memoria ya tiene la respuesta, usala directamente y no digas que no sabes.\n"
         "Return:\n"
         "  A JSON object with saved notes, recent conversation turns from earlier sessions, and a combined context string you can reuse in your reasoning.",
         PropertyList(),
         [](const PropertyList& properties) -> ReturnValue {
             (void)properties;
+            ESP_LOGI(TAG, "Memory context tool called");
             return MemoryStore::GetInstance().GetContextJson();
         });
 
     AddTool("self.memory.get_user_profile",
-        "You must call this before answering questions about the user's name, age, identity, or profile.\n"
-        "Examples: 'what is my name', 'how am I called', 'who am I', 'how old am I', 'what do you remember about me'.\n"
+        "Debes llamar esta tool antes de responder preguntas sobre el nombre del usuario, identidad, edad o perfil.\n"
+        "Examples: 'what is my name', 'como me llamo', 'quien soy', 'how old am I', 'que recuerdas de mi'.\n"
         "If this tool returns a known fact, answer with that fact instead of saying you do not know.\n"
         "Return:\n"
         "  A JSON object with the remembered user name and durable notes.",
         PropertyList(),
         [](const PropertyList& properties) -> ReturnValue {
             (void)properties;
+            ESP_LOGI(TAG, "Memory profile tool called");
             return MemoryStore::GetInstance().GetUserProfileJson();
         });
 
     AddTool("self.memory.remember",
-        "You must call this when the user says things like 'remember this', 'recuerda', 'acuérdate', or explicitly asks you to remember a fact for future sessions.\n"
-        "Save durable facts that should survive future sessions, such as the user's preferences, names, age, devices, projects, recurring goals, or explicit things they ask you to remember.\n"
-        "Do not store one-off chatter. Use short factual notes.",
+        "Debes llamar esta tool cuando el usuario diga cosas como 'recuerda', 'acuérdate', 'remember this' o te pida guardar un dato para futuras sesiones.\n"
+        "Save durable facts that should survive future sessions, such as preferences, names, age, devices, projects, pets, family, recurring goals, or explicit things the user asks you to remember.\n"
+        "Do not store one-off chatter. Usa notas cortas y factuales.",
         PropertyList({
             Property("note", kPropertyTypeString)
         }),
         [](const PropertyList& properties) -> ReturnValue {
-            MemoryStore::GetInstance().Remember(properties["note"].value<std::string>());
+            auto& memory = MemoryStore::GetInstance();
+            ESP_LOGI(TAG, "Memory remember tool called");
+            memory.Remember(properties["note"].value<std::string>());
+            memory.SyncToBackend();
             return true;
         });
 

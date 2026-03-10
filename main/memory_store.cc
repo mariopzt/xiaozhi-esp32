@@ -4,13 +4,23 @@
 #include <cctype>
 #include <cstring>
 #include <esp_log.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <iomanip>
+#include <sstream>
 #include <vector>
 
+#include "board.h"
 #include "settings.h"
+#include "system_info.h"
 
 namespace {
 constexpr size_t kMaxNotesChars = 1200;
 constexpr size_t kMaxRecentTurnsChars = 2800;
+constexpr const char* kMemorySyncBaseUrl = "http://192.168.1.132:8787";
+constexpr int kMemorySyncTimeoutSeconds = 2;
+constexpr int kMemorySyncDebounceMs = 1200;
+constexpr int kMemorySyncRetryMs = 2500;
 
 const char* kSettingsNamespace = "memory";
 const char* kNotesKey = "notes";
@@ -58,11 +68,7 @@ MemoryStore& MemoryStore::GetInstance() {
     return instance;
 }
 
-cJSON* MemoryStore::GetContextJson() const {
-    auto notes = GetNotes();
-    auto recent_turns = GetRecentTurns();
-    auto user_name = GetUserName();
-
+cJSON* MemoryStore::BuildContextJson(const std::string& user_name, const std::string& notes, const std::string& recent_turns) const {
     cJSON* json = cJSON_CreateObject();
     cJSON_AddStringToObject(json, "user_name", user_name.c_str());
     cJSON_AddStringToObject(json, "notes", notes.c_str());
@@ -96,11 +102,26 @@ cJSON* MemoryStore::GetContextJson() const {
     return json;
 }
 
-cJSON* MemoryStore::GetUserProfileJson() const {
+cJSON* MemoryStore::GetContextJson() {
+    SyncSnapshotToBackend();
+    MergeContextFromBackend("");
+    return BuildContextJson(GetUserName(), GetNotes(), GetRecentTurns());
+}
+
+cJSON* MemoryStore::GetUserProfileJson() {
+    SyncSnapshotToBackend();
+    MergeContextFromBackend("");
+
     cJSON* json = cJSON_CreateObject();
     cJSON_AddStringToObject(json, "user_name", GetUserName().c_str());
     cJSON_AddStringToObject(json, "notes", GetNotes().c_str());
     return json;
+}
+
+cJSON* MemoryStore::SearchContextJson(const std::string& query) {
+    SyncSnapshotToBackend();
+    MergeContextFromBackend(query);
+    return BuildContextJson(GetUserName(), GetNotes(), GetRecentTurns());
 }
 
 void MemoryStore::Remember(const std::string& note) {
@@ -120,7 +141,56 @@ void MemoryStore::Remember(const std::string& note) {
     }
     notes += normalized;
     SetNotes(TrimToLimit(notes, kMaxNotesChars));
+    SyncToBackendAsync();
     ESP_LOGI(TAG, "Stored memory note");
+}
+
+void MemoryStore::SyncToBackend() {
+    if (SyncSnapshotToBackend()) {
+        backend_snapshot_dirty_.store(false, std::memory_order_relaxed);
+    } else {
+        backend_snapshot_dirty_.store(true, std::memory_order_relaxed);
+    }
+}
+
+void MemoryStore::SyncToBackendAsync() {
+    backend_snapshot_dirty_.store(true, std::memory_order_relaxed);
+    if (sync_task_running_.exchange(true, std::memory_order_relaxed)) {
+        return;
+    }
+
+    auto task_entry = [](void* arg) {
+        auto* store = static_cast<MemoryStore*>(arg);
+        while (true) {
+            vTaskDelay(pdMS_TO_TICKS(kMemorySyncDebounceMs));
+
+            if (!store->backend_snapshot_dirty_.load(std::memory_order_relaxed)) {
+                break;
+            }
+
+            store->backend_snapshot_dirty_.store(false, std::memory_order_relaxed);
+            if (!store->SyncSnapshotToBackend()) {
+                store->backend_snapshot_dirty_.store(true, std::memory_order_relaxed);
+                vTaskDelay(pdMS_TO_TICKS(kMemorySyncRetryMs));
+                continue;
+            }
+
+            if (!store->backend_snapshot_dirty_.load(std::memory_order_relaxed)) {
+                break;
+            }
+        }
+
+        store->sync_task_running_.store(false, std::memory_order_relaxed);
+        if (store->backend_snapshot_dirty_.load(std::memory_order_relaxed)) {
+            store->SyncToBackendAsync();
+        }
+        vTaskDelete(nullptr);
+    };
+
+    if (xTaskCreate(task_entry, "memory_sync", 4096, this, 1, nullptr) != pdPASS) {
+        sync_task_running_.store(false, std::memory_order_relaxed);
+        ESP_LOGE(TAG, "Failed to create memory sync task");
+    }
 }
 
 void MemoryStore::LearnFromUserText(const std::string& text) {
@@ -248,6 +318,7 @@ void MemoryStore::AppendConversationLine(const char* speaker, const std::string&
     }
     turns += line;
     SetRecentTurns(TrimToLimit(turns, kMaxRecentTurnsChars));
+    SyncToBackendAsync();
 }
 
 void MemoryStore::Clear() {
@@ -441,10 +512,18 @@ std::vector<std::string> MemoryStore::ExtractProfileFacts(const std::string& tex
         {"mi pareja se llama ", "The user's partner is %s."},
         {"mi novia se llama ", "The user's partner is %s."},
         {"mi novio se llama ", "The user's partner is %s."},
+        {"mi mujer se llama ", "The user's partner is %s."},
+        {"mi esposa se llama ", "The user's partner is %s."},
+        {"mi esposo se llama ", "The user's partner is %s."},
+        {"el nombre de mi mujer es ", "The user's partner is %s."},
+        {"el nombre de mi esposa es ", "The user's partner is %s."},
+        {"el nombre de mi esposo es ", "The user's partner is %s."},
         {"mi madre se llama ", "The user's mother is %s."},
         {"mi padre se llama ", "The user's father is %s."},
         {"mi hermana se llama ", "The user's sister is %s."},
         {"mi hermano se llama ", "The user's brother is %s."},
+        {"mi hija se llama ", "The user's daughter is %s."},
+        {"mi hijo se llama ", "The user's son is %s."},
         {"mi perro se llama ", "The user's dog is %s."},
         {"mi perra se llama ", "The user's dog is %s."},
         {"mi gato se llama ", "The user's cat is %s."},
@@ -507,14 +586,154 @@ std::string MemoryStore::GetUserName() const {
 void MemoryStore::SetNotes(const std::string& notes) {
     Settings settings(kSettingsNamespace, true);
     settings.SetString(kNotesKey, TrimToLimit(notes, kMaxNotesChars));
+    backend_snapshot_dirty_.store(true, std::memory_order_relaxed);
 }
 
 void MemoryStore::SetRecentTurns(const std::string& turns) {
     Settings settings(kSettingsNamespace, true);
     settings.SetString(kRecentTurnsKey, TrimToLimit(turns, kMaxRecentTurnsChars));
+    backend_snapshot_dirty_.store(true, std::memory_order_relaxed);
 }
 
 void MemoryStore::SetUserName(const std::string& user_name) {
     Settings settings(kSettingsNamespace, true);
     settings.SetString(kUserNameKey, user_name);
+    backend_snapshot_dirty_.store(true, std::memory_order_relaxed);
+}
+
+bool MemoryStore::SyncSnapshotToBackend() {
+    auto http = Board::GetInstance().GetNetwork()->CreateHttp(kMemorySyncTimeoutSeconds);
+    if (http == nullptr) {
+        return false;
+    }
+
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "user_name", GetUserName().c_str());
+    cJSON_AddStringToObject(root, "notes", GetNotes().c_str());
+    cJSON_AddStringToObject(root, "recent_turns", GetRecentTurns().c_str());
+    char* payload = cJSON_PrintUnformatted(root);
+    std::string body = payload ? payload : "{}";
+    if (payload != nullptr) {
+        cJSON_free(payload);
+    }
+    cJSON_Delete(root);
+
+    std::string url = std::string(kMemorySyncBaseUrl) + "/memory-sync/snapshot/" + GetDeviceId();
+    http->SetHeader("Content-Type", "application/json");
+    http->SetContent(std::move(body));
+    if (!http->Open("POST", url)) {
+        return false;
+    }
+    int status = http->GetStatusCode();
+    http->ReadAll();
+    http->Close();
+    return status >= 200 && status < 300;
+}
+
+bool MemoryStore::MergeContextFromBackend(const std::string& query) {
+    auto http = Board::GetInstance().GetNetwork()->CreateHttp(kMemorySyncTimeoutSeconds);
+    if (http == nullptr) {
+        return false;
+    }
+
+    std::string url = std::string(kMemorySyncBaseUrl) + "/memory-sync/context/" + GetDeviceId();
+    if (!query.empty()) {
+        url += "?query=" + UrlEncode(query);
+    }
+
+    if (!http->Open("GET", url)) {
+        return false;
+    }
+
+    int status = http->GetStatusCode();
+    std::string response = http->ReadAll();
+    http->Close();
+    if (status < 200 || status >= 300) {
+        return false;
+    }
+
+    cJSON* root = cJSON_Parse(response.c_str());
+    if (root == nullptr) {
+        return false;
+    }
+
+    std::string merged_name = GetUserName();
+    std::string merged_notes = GetNotes();
+    std::string merged_turns = GetRecentTurns();
+
+    auto user_name = cJSON_GetObjectItem(root, "user_name");
+    if (merged_name.empty() && cJSON_IsString(user_name) && user_name->valuestring != nullptr) {
+        merged_name = user_name->valuestring;
+    }
+
+    auto notes = cJSON_GetObjectItem(root, "notes");
+    if (cJSON_IsString(notes) && notes->valuestring != nullptr) {
+        merged_notes = MergeUniqueLines(merged_notes, notes->valuestring, kMaxNotesChars);
+    }
+
+    auto recent_turns = cJSON_GetObjectItem(root, "recent_turns");
+    if (cJSON_IsString(recent_turns) && recent_turns->valuestring != nullptr) {
+        merged_turns = MergeUniqueLines(merged_turns, recent_turns->valuestring, kMaxRecentTurnsChars);
+    }
+
+    cJSON_Delete(root);
+
+    if (merged_name != GetUserName()) {
+        SetUserName(merged_name);
+    }
+    if (merged_notes != GetNotes()) {
+        SetNotes(merged_notes);
+    }
+    if (merged_turns != GetRecentTurns()) {
+        SetRecentTurns(merged_turns);
+    }
+    return true;
+}
+
+std::string MemoryStore::GetDeviceId() const {
+    return SystemInfo::GetMacAddress();
+}
+
+std::string MemoryStore::MergeUniqueLines(const std::string& primary, const std::string& secondary, size_t max_chars) const {
+    std::vector<std::string> merged;
+    auto append_unique = [&merged](const std::string& text) {
+        for (const auto& line : SplitLines(text)) {
+            if (line.empty()) {
+                continue;
+            }
+            if (std::find(merged.begin(), merged.end(), line) == merged.end()) {
+                merged.push_back(line);
+            }
+        }
+    };
+
+    append_unique(primary);
+    append_unique(secondary);
+
+    std::string result;
+    for (const auto& line : merged) {
+        if (!result.empty()) {
+            result += "\n";
+        }
+        result += line;
+    }
+    return TrimToLimit(result, max_chars);
+}
+
+std::string MemoryStore::UrlEncode(const std::string& value) const {
+    std::ostringstream encoded;
+    encoded.fill('0');
+    encoded << std::hex << std::uppercase;
+
+    for (unsigned char ch : value) {
+        if (std::isalnum(ch) || ch == '-' || ch == '_' || ch == '.' || ch == '~') {
+            encoded << static_cast<char>(ch);
+        } else if (ch == ' ') {
+            encoded << "%20";
+        } else {
+            encoded << '%' << std::setw(2) << static_cast<int>(ch);
+        }
+    }
+
+    return encoded.str();
 }
