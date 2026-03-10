@@ -90,6 +90,12 @@ async def memory_sync_remember(device_id: str, payload: MemoryRememberIn) -> dic
     return {"ok": True}
 
 
+@app.post("/memory-sync/clear/{device_id}")
+async def memory_sync_clear(device_id: str) -> dict[str, bool]:
+    await backend.memory.clear_device_memory(device_id)
+    return {"ok": True}
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await backend.handle_socket(websocket)

@@ -392,6 +392,15 @@ class MemoryService:
             return
         await self._store_memory(user_id, normalized, "device_remember")
 
+    async def clear_device_memory(self, user_id: str) -> None:
+        await self._profiles.delete_many({"user_id": user_id})
+        await self._memories.delete_many({"user_id": user_id})
+        await self._reminders.delete_many({"user_id": user_id})
+        await self._summaries.delete_many({"user_id": user_id})
+        await self._sessions.delete_many({"user_id": user_id})
+        await self._brains.delete_many({"user_id": user_id})
+        await self._turns.delete_many({"user_id": user_id})
+
     async def _next_turn_index(self, user_id: str, session_id: str) -> int:
         last_turn = await self._turns.find_one(
             {"user_id": user_id, "session_id": session_id},
@@ -543,6 +552,8 @@ class MemoryService:
         return " ".join(text.split()).strip()
 
     async def _store_memory(self, user_id: str, text: str, kind: str) -> None:
+        if not self._should_store_memory_text(text, kind):
+            return
         existing = await self._memories.find_one({"user_id": user_id, "text": text})
         if existing is not None:
             return
@@ -554,6 +565,26 @@ class MemoryService:
                 "created_at": utc_now(),
             }
         )
+
+    def _should_store_memory_text(self, text: str, kind: str) -> bool:
+        normalized = self._normalize_text(text)
+        if not normalized:
+            return False
+
+        lowered = normalized.casefold()
+        if kind not in {"explicit_remember", "device_remember"}:
+            if "?" in normalized or "¿" in normalized:
+                return False
+            if len(normalized) < 8:
+                return False
+            if lowered.startswith(("como ", "cómo ", "que ", "qué ", "cual ", "cuál ")):
+                return False
+            if lowered in {"si", "sí", "ok", "vale", "memo", "numero 2", "número 2"}:
+                return False
+            letters = sum(1 for ch in normalized if ch.isalpha())
+            if letters < 4:
+                return False
+        return True
 
     async def _store_reminder_from_text(self, user_id: str, text: str) -> str:
         reminder = self._extract_reminder(text)
