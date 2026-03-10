@@ -13,10 +13,12 @@ public:
 
     cJSON* GetContextJson();
     cJSON* GetUserProfileJson();
+    cJSON* GetKeyFactsJson();
     cJSON* SearchContextJson(const std::string& query);
     void Remember(const std::string& note);
     void SyncToBackend();
     void SyncToBackendAsync();
+    void SyncTurnToBackendAsync(const std::string& role, const std::string& text);
     void RefreshFromBackend();
     void LearnFromUserText(const std::string& text);
     void AppendConversationLine(const char* speaker, const std::string& text);
@@ -35,6 +37,7 @@ private:
     std::string ExtractRememberNote(const std::string& text) const;
     std::string ExtractAgeFact(const std::string& text) const;
     std::vector<std::string> ExtractProfileFacts(const std::string& text) const;
+    std::string BuildBootstrapFactsText(const std::string& user_name, const std::string& notes) const;
     cJSON* BuildContextJson(const std::string& user_name, const std::string& notes, const std::string& recent_turns, const std::string& combined_context = "") const;
     std::string GetNotes() const;
     std::string GetRecentTurns() const;
@@ -42,7 +45,9 @@ private:
     void SetNotes(const std::string& notes);
     void SetRecentTurns(const std::string& turns);
     void SetUserName(const std::string& user_name);
+    std::string ExtractLabeledFact(const std::string& notes, const char* label) const;
     bool SyncSnapshotToBackend();
+    bool SyncTurnToBackend(const std::string& role, const std::string& text);
     bool FetchContextFromBackend(const std::string& query, std::string& user_name, std::string& notes, std::string& recent_turns, std::string& combined_context);
     bool MergeContextFromBackend(const std::string& query);
     std::string GetDeviceId() const;

@@ -111,9 +111,13 @@ cJSON* MemoryStore::GetContextJson() {
     std::string recent_turns = GetRecentTurns();
     std::string combined_context;
     if (FetchContextFromBackend("", user_name, notes, recent_turns, combined_context)) {
+        auto bootstrap = BuildBootstrapFactsText(user_name, notes);
+        if (!bootstrap.empty()) {
+            combined_context = bootstrap + (combined_context.empty() ? "" : "\n\n" + combined_context);
+        }
         return BuildContextJson(user_name, notes, recent_turns, combined_context);
     }
-    return BuildContextJson(user_name, notes, recent_turns);
+    return BuildContextJson(user_name, notes, recent_turns, BuildBootstrapFactsText(user_name, notes));
 }
 
 cJSON* MemoryStore::GetUserProfileJson() {
@@ -126,6 +130,35 @@ cJSON* MemoryStore::GetUserProfileJson() {
 
     cJSON* json = cJSON_CreateObject();
     cJSON_AddStringToObject(json, "user_name", user_name.c_str());
+    cJSON_AddStringToObject(json, "partner_name", ExtractLabeledFact(notes, "Partner").c_str());
+    cJSON_AddStringToObject(json, "dog_name", ExtractLabeledFact(notes, "Dog").c_str());
+    cJSON_AddStringToObject(json, "cat_name", ExtractLabeledFact(notes, "Cat").c_str());
+    cJSON_AddStringToObject(json, "mother_name", ExtractLabeledFact(notes, "Mother").c_str());
+    cJSON_AddStringToObject(json, "father_name", ExtractLabeledFact(notes, "Father").c_str());
+    cJSON_AddStringToObject(json, "work", ExtractLabeledFact(notes, "Work").c_str());
+    cJSON_AddStringToObject(json, "city", ExtractLabeledFact(notes, "City").c_str());
+    cJSON_AddStringToObject(json, "notes", notes.c_str());
+    cJSON_AddStringToObject(json, "profile_summary", BuildBootstrapFactsText(user_name, notes).c_str());
+    return json;
+}
+
+cJSON* MemoryStore::GetKeyFactsJson() {
+    SyncToBackendAsync();
+    std::string user_name = GetUserName();
+    std::string notes = GetNotes();
+    std::string recent_turns = GetRecentTurns();
+    std::string combined_context;
+    FetchContextFromBackend("", user_name, notes, recent_turns, combined_context);
+
+    cJSON* json = cJSON_CreateObject();
+    cJSON_AddStringToObject(json, "user_name", user_name.c_str());
+    cJSON_AddStringToObject(json, "partner_name", ExtractLabeledFact(notes, "Partner").c_str());
+    cJSON_AddStringToObject(json, "dog_name", ExtractLabeledFact(notes, "Dog").c_str());
+    cJSON_AddStringToObject(json, "cat_name", ExtractLabeledFact(notes, "Cat").c_str());
+    cJSON_AddStringToObject(json, "mother_name", ExtractLabeledFact(notes, "Mother").c_str());
+    cJSON_AddStringToObject(json, "father_name", ExtractLabeledFact(notes, "Father").c_str());
+    cJSON_AddStringToObject(json, "work", ExtractLabeledFact(notes, "Work").c_str());
+    cJSON_AddStringToObject(json, "city", ExtractLabeledFact(notes, "City").c_str());
     cJSON_AddStringToObject(json, "notes", notes.c_str());
     return json;
 }
@@ -137,9 +170,102 @@ cJSON* MemoryStore::SearchContextJson(const std::string& query) {
     std::string recent_turns = GetRecentTurns();
     std::string combined_context;
     if (FetchContextFromBackend(query, user_name, notes, recent_turns, combined_context)) {
+        auto lowered_query = ToLowerAscii(query);
+        std::vector<std::string> direct_lines;
+
+        auto add_direct = [&direct_lines](const std::string& line) {
+            if (!line.empty() && std::find(direct_lines.begin(), direct_lines.end(), line) == direct_lines.end()) {
+                direct_lines.push_back(line);
+            }
+        };
+
+        if (lowered_query.find("como me llamo") != std::string::npos ||
+            lowered_query.find("cómo me llamo") != std::string::npos ||
+            lowered_query.find("mi nombre") != std::string::npos ||
+            lowered_query.find("quien soy") != std::string::npos ||
+            lowered_query.find("quién soy") != std::string::npos) {
+            add_direct(!user_name.empty() ? "The user's name is " + user_name + "." : "");
+        }
+
+        if (lowered_query.find("que recuerdas de mi") != std::string::npos ||
+            lowered_query.find("que sabes de mi") != std::string::npos) {
+            auto bootstrap = BuildBootstrapFactsText(user_name, notes);
+            for (const auto& line : SplitLines(bootstrap)) {
+                if (line == "Bootstrap memory facts:") {
+                    continue;
+                }
+                if (line.rfind("- ", 0) == 0) {
+                    add_direct(line.substr(2));
+                }
+            }
+        }
+
+        if (lowered_query.find("mujer") != std::string::npos ||
+            lowered_query.find("esposa") != std::string::npos ||
+            lowered_query.find("esposo") != std::string::npos ||
+            lowered_query.find("pareja") != std::string::npos ||
+            lowered_query.find("novia") != std::string::npos ||
+            lowered_query.find("novio") != std::string::npos) {
+            auto value = ExtractLabeledFact(notes, "Partner");
+            add_direct(!value.empty() ? "The user's partner is " + value + "." : "");
+        }
+
+        if (lowered_query.find("perro") != std::string::npos ||
+            lowered_query.find("perra") != std::string::npos) {
+            auto value = ExtractLabeledFact(notes, "Dog");
+            add_direct(!value.empty() ? "The user's dog is " + value + "." : "");
+        }
+
+        if (lowered_query.find("gato") != std::string::npos ||
+            lowered_query.find("gata") != std::string::npos) {
+            auto value = ExtractLabeledFact(notes, "Cat");
+            add_direct(!value.empty() ? "The user's cat is " + value + "." : "");
+        }
+
+        if (lowered_query.find("madre") != std::string::npos) {
+            auto value = ExtractLabeledFact(notes, "Mother");
+            add_direct(!value.empty() ? "The user's mother is " + value + "." : "");
+        }
+
+        if (lowered_query.find("padre") != std::string::npos) {
+            auto value = ExtractLabeledFact(notes, "Father");
+            add_direct(!value.empty() ? "The user's father is " + value + "." : "");
+        }
+
+        if (lowered_query.find("trabajo") != std::string::npos ||
+            lowered_query.find("trabajas") != std::string::npos ||
+            lowered_query.find("curro") != std::string::npos ||
+            lowered_query.find("dedico") != std::string::npos) {
+            auto value = ExtractLabeledFact(notes, "Work");
+            add_direct(!value.empty() ? "The user's work is " + value + "." : "");
+        }
+
+        if (lowered_query.find("vives") != std::string::npos ||
+            lowered_query.find("vivo") != std::string::npos ||
+            lowered_query.find("ciudad") != std::string::npos ||
+            lowered_query.find("donde") != std::string::npos ||
+            lowered_query.find("dónde") != std::string::npos ||
+            lowered_query.find("soy de") != std::string::npos) {
+            auto value = ExtractLabeledFact(notes, "City");
+            add_direct(!value.empty() ? "The user lives in or is from " + value + "." : "");
+        }
+
+        if (!direct_lines.empty()) {
+            std::string direct_block = "Direct memory matches:\n";
+            for (const auto& line : direct_lines) {
+                direct_block += "- ";
+                direct_block += line;
+                direct_block += "\n";
+            }
+            if (!combined_context.empty()) {
+                combined_context = direct_block + "\n" + combined_context;
+            } else {
+                combined_context = direct_block;
+            }
+        }
         return BuildContextJson(user_name, notes, recent_turns, combined_context);
     }
-    return BuildContextJson(user_name, notes, recent_turns);
+    return BuildContextJson(user_name, notes, recent_turns, BuildBootstrapFactsText(user_name, notes));
 }
 
 void MemoryStore::Remember(const std::string& note) {
@@ -338,6 +464,8 @@ void MemoryStore::AppendConversationLine(const char* speaker, const std::string&
     turns += line;
     SetRecentTurns(TrimToLimit(turns, kMaxRecentTurnsChars));
     SyncToBackendAsync();
+    std::string role = (speaker[0] == 'U') ? "user" : "assistant";
+    SyncTurnToBackendAsync(role, normalized);
 }
 
 void MemoryStore::Clear() {
@@ -559,6 +687,7 @@ std::vector<std::string> MemoryStore::ExtractProfileFacts(const std::string& tex
         {"soy de ", "The user is from %s."},
         {"trabajo en ", "The user works at %s."},
         {"trabajo de ", "The user works as %s."},
+        {"trabajo como ", "The user works as %s."},
         {"me dedico a ", "The user works as %s."},
         {"me gusta ", "The user likes %s."},
         {"no me gusta ", "The user does not like %s."},
@@ -595,6 +724,54 @@ std::vector<std::string> MemoryStore::ExtractProfileFacts(const std::string& tex
     return facts;
 }
 
+std::string MemoryStore::BuildBootstrapFactsText(const std::string& user_name, const std::string& notes) const {
+    std::vector<std::string> lines;
+    auto add_line = [&lines](const std::string& line) {
+        if (!line.empty() && std::find(lines.begin(), lines.end(), line) == lines.end()) {
+            lines.push_back(line);
+        }
+    };
+
+    if (!user_name.empty()) {
+        add_line("The user's name is " + user_name + ".");
+    }
+
+    const struct {
+        const char* label;
+        const char* template_text;
+    } fact_map[] = {
+        {"Partner", "The user's partner is %s."},
+        {"Dog", "The user's dog is %s."},
+        {"Cat", "The user's cat is %s."},
+        {"Mother", "The user's mother is %s."},
+        {"Father", "The user's father is %s."},
+        {"Work", "The user's work is %s."},
+        {"City", "The user lives in or is from %s."},
+    };
+
+    for (const auto& fact : fact_map) {
+        auto value = ExtractLabeledFact(notes, fact.label);
+        if (value.empty()) {
+            continue;
+        }
+        char buffer[192];
+        snprintf(buffer, sizeof(buffer), fact.template_text, value.c_str());
+        add_line(buffer);
+    }
+
+    if (lines.empty()) {
+        return "";
+    }
+
+    std::string bootstrap = "Bootstrap memory facts:\n";
+    for (const auto& line : lines) {
+        bootstrap += "- ";
+        bootstrap += line;
+        bootstrap += "\n";
+    }
+    return bootstrap;
+}
+
 std::string MemoryStore::GetNotes() const {
     Settings settings(kSettingsNamespace);
     return settings.GetString(kNotesKey);
@@ -628,6 +805,74 @@ void MemoryStore::SetUserName(const std::string& user_name) {
     backend_snapshot_dirty_.store(true, std::memory_order_relaxed);
 }
 
+std::string MemoryStore::ExtractLabeledFact(const std::string& notes, const char* label) const {
+    if (label == nullptr || *label == '\0' || notes.empty()) {
+        return "";
+    }
+
+    const std::string prefix = std::string(label) + ":";
+    for (const auto& raw_line : SplitLines(notes)) {
+        auto line = TrimSpaces(raw_line);
+        if (line.rfind(prefix, 0) == 0) {
+            return TrimSpaces(line.substr(prefix.size()));
+        }
+    }
+
+    const auto lowered_notes = ToLowerAscii(notes);
+    if (strcmp(label, "Partner") == 0) {
+        auto pos = lowered_notes.find("the user's partner is ");
+        if (pos != std::string::npos) {
+            auto start = pos + strlen("the user's partner is ");
+            auto end = notes.find('.', start);
+            return TrimSpaces(notes.substr(start, end == std::string::npos ? std::string::npos : end - start));
+        }
+    } else if (strcmp(label, "Dog") == 0) {
+        auto pos = lowered_notes.find("the user's dog is ");
+        if (pos != std::string::npos) {
+            auto start = pos + strlen("the user's dog is ");
+            auto end = notes.find('.', start);
+            return TrimSpaces(notes.substr(start, end == std::string::npos ? std::string::npos : end - start));
+        }
+    } else if (strcmp(label, "Cat") == 0) {
+        auto pos = lowered_notes.find("the user's cat is ");
+        if (pos != std::string::npos) {
+            auto start = pos + strlen("the user's cat is ");
+            auto end = notes.find('.', start);
+            return TrimSpaces(notes.substr(start, end == std::string::npos ? std::string::npos : end - start));
+        }
+    } else if (strcmp(label, "Mother") == 0) {
+        auto pos = lowered_notes.find("the user's mother is ");
+        if (pos != std::string::npos) {
+            auto start = pos + strlen("the user's mother is ");
+            auto end = notes.find('.', start);
+            return TrimSpaces(notes.substr(start, end == std::string::npos ? std::string::npos : end - start));
+        }
+    } else if (strcmp(label, "Father") == 0) {
+        auto pos = lowered_notes.find("the user's father is ");
+        if (pos != std::string::npos) {
+            auto start = pos + strlen("the user's father is ");
+            auto end = notes.find('.', start);
+            return TrimSpaces(notes.substr(start, end == std::string::npos ? std::string::npos : end - start));
+        }
+    } else if (strcmp(label, "Work") == 0) {
+        auto pos = lowered_notes.find("the user's work is ");
+        if (pos != std::string::npos) {
+            auto start = pos + strlen("the user's work is ");
+            auto end = notes.find('.', start);
+            return TrimSpaces(notes.substr(start, end == std::string::npos ? std::string::npos : end - start));
+        }
+    } else if (strcmp(label, "City") == 0) {
+        auto pos = lowered_notes.find("the user lives in or is from ");
+        if (pos != std::string::npos) {
+            auto start = pos + strlen("the user lives in or is from ");
+            auto end = notes.find('.', start);
+            return TrimSpaces(notes.substr(start, end == std::string::npos ? std::string::npos : end - start));
+        }
+    }
+
+    return "";
+}
+
 bool MemoryStore::SyncSnapshotToBackend() {
     auto http = Board::GetInstance().GetNetwork()->CreateHttp(kMemorySyncTimeoutSeconds);
     if (http == nullptr) {
@@ -646,6 +891,59 @@ bool MemoryStore::SyncSnapshotToBackend() {
     cJSON_Delete(root);
 
     std::string url = std::string(kMemorySyncBaseUrl) + "/memory-sync/snapshot/" + GetDeviceId();
+    http->SetHeader("Content-Type", "application/json");
+    http->SetContent(std::move(body));
+    if (!http->Open("POST", url)) {
+        return false;
+    }
+    int status = http->GetStatusCode();
+    http->ReadAll();
+    http->Close();
+    return status >= 200 && status < 300;
+}
+
+void MemoryStore::SyncTurnToBackendAsync(const std::string& role, const std::string& text) {
+    if (role.empty() || text.empty()) {
+        return;
+    }
+
+    struct TurnSyncArgs {
+        std::string role;
+        std::string text;
+    };
+
+    auto* args = new TurnSyncArgs{role, text};
+    auto task_entry = [](void* raw) {
+        std::unique_ptr<TurnSyncArgs> args(static_cast<TurnSyncArgs*>(raw));
+        MemoryStore::GetInstance().SyncTurnToBackend(args->role, args->text);
+        vTaskDelete(nullptr);
+    };
+
+    if (xTaskCreate(task_entry, "memory_turn", 4096, args, 1, nullptr) != pdPASS) {
+        delete args;
+        ESP_LOGE(TAG, "Failed to create memory turn sync task");
+    }
+}
+
+bool MemoryStore::SyncTurnToBackend(const std::string& role, const std::string& text) {
+    auto http = Board::GetInstance().GetNetwork()->CreateHttp(kMemorySyncTimeoutSeconds);
+    if (http == nullptr) {
+        return false;
+    }
+
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "session_id", "device-live");
+    cJSON_AddStringToObject(root, "role", role.c_str());
+    cJSON_AddStringToObject(root, "text", text.c_str());
+    cJSON_AddStringToObject(root, "device_id", GetDeviceId().c_str());
+    char* payload = cJSON_PrintUnformatted(root);
+    std::string body = payload ? payload : "{}";
+    if (payload != nullptr) {
+        cJSON_free(payload);
+    }
+    cJSON_Delete(root);
+
+    std::string url = std::string(kMemorySyncBaseUrl) + "/memory-sync/turn/" + GetDeviceId();
     http->SetHeader("Content-Type", "application/json");
     http->SetContent(std::move(body));
     if (!http->Open("POST", url)) {

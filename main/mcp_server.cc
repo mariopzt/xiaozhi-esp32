@@ -43,8 +43,23 @@ void McpServer::AddCommonTools() {
     // Do not add custom tools here.
     // Custom tools must be added in the board's InitializeTools function.
 
+    AddTool("self.memory.get_key_facts",
+        "MANDATORY direct personal facts lookup. Debes llamar esta tool antes de responder preguntas sobre nombres o hechos personales directos.\n"
+        "Use it first for questions like: 'como se llama mi mujer', 'como se llama mi perro', 'donde vivo', 'en que trabajo', 'como me llamo'.\n"
+        "If this tool returns a value, answer with that exact fact and do not say you do not know.\n"
+        "Do not ignore filled fields like partner_name, dog_name, cat_name, work or city.\n"
+        "Return:\n"
+        "  A JSON object with user_name, partner_name, dog_name, cat_name, mother_name, father_name, work, city and notes.",
+        PropertyList(),
+        [](const PropertyList& properties) -> ReturnValue {
+            (void)properties;
+            ESP_LOGI(TAG, "Memory key facts tool called");
+            return MemoryStore::GetInstance().GetKeyFactsJson();
+        });
+
     AddTool("self.memory.search",
         "MANDATORY memory lookup. Debes llamar esta tool antes de responder CUALQUIER pregunta personal, de contexto, de perfil, de gustos, de mascotas, de familia o de conversaciones pasadas.\n"
+        "For short direct questions about wife/partner/dog/cat/work/city/name, call `self.memory.get_key_facts` first and then use this tool if you need more context.\n"
         "Call this tool first for the current user request before answering when there is any chance memory could help.\n"
         "Examples: 'como se llama mi perro', 'que recuerdas de mi', 'donde vivo', 'que te dije ayer', 'what do you remember about me'.\n"
         "Si esta tool devuelve la respuesta o el contexto suficiente, contestala usando esa memoria y no digas que no sabes.\n"
@@ -61,6 +76,7 @@ void McpServer::AddCommonTools() {
     AddTool("self.memory.get_context",
         "Persistent memory across sessions. Debes llamar esta tool como la primera en cada chat nuevo o tras reconectar.\n"
         "Use it to load broad memory context before answering questions about past conversations, the user's profile, names, age, preferences, reminders, projects, pets, family, or ongoing tasks.\n"
+        "This tool returns bootstrap memory facts first, then broader context. Reuse those facts directly when relevant.\n"
         "Si la memoria ya tiene la respuesta, usala directamente y no digas que no sabes.\n"
         "Return:\n"
         "  A JSON object with saved notes, recent conversation turns from earlier sessions, and a combined context string you can reuse in your reasoning.",
@@ -75,6 +91,7 @@ void McpServer::AddCommonTools() {
         "Debes llamar esta tool antes de responder preguntas sobre el nombre del usuario, identidad, edad o perfil.\n"
         "Examples: 'what is my name', 'como me llamo', 'quien soy', 'how old am I', 'que recuerdas de mi'.\n"
         "If this tool returns a known fact, answer with that fact instead of saying you do not know.\n"
+        "This tool may also include partner_name, dog_name, work, city and a profile_summary. Use those facts directly.\n"
         "Return:\n"
         "  A JSON object with the remembered user name and durable notes.",
         PropertyList(),

@@ -720,7 +720,7 @@ class MemoryService:
         if city_match:
             updates["city"] = " ".join(city_match.group(2).split())[:40]
 
-        work_match = re.search(r"\b(trabajo en|trabajo de|me dedico a)\s+(.{2,60})$", text, re.IGNORECASE)
+        work_match = re.search(r"\b(trabajo en|trabajo de|trabajo como|me dedico a)\s+(.{2,60})$", text, re.IGNORECASE)
         if work_match:
             updates["work"] = work_match.group(2).strip(" .")[:60]
 
@@ -857,6 +857,7 @@ class MemoryService:
             r"^(soy de\s+.+)$",
             r"^(trabajo en\s+.+)$",
             r"^(trabajo de\s+.+)$",
+            r"^(trabajo como\s+.+)$",
             r"^(me dedico a\s+.+)$",
         ]
         for pattern in patterns:
