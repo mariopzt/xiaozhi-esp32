@@ -70,6 +70,50 @@ Para pararlo:
 powershell -ExecutionPolicy Bypass -File .\stop_backend.ps1
 ```
 
+## Railway
+
+Para Railway, usa esta carpeta `backend/` como servicio independiente.
+
+### Opcion recomendada
+
+- Conecta el repo en Railway.
+- En el servicio, pon `Root Directory = backend`.
+- Railway detectara el [Dockerfile](/H:/Programacion/robotCabeza/xiaozhi-esp32/backend/Dockerfile) y lo usara para construir.
+
+### Variables
+
+Configura estas variables en Railway:
+
+- `OPENAI_API_KEY`
+- `MONGODB_URI`
+- `MONGO_DB_NAME`
+- `WS_AUTH_TOKEN`
+- `BACKEND_HOST=0.0.0.0`
+- `BACKEND_PORT=8787`
+- `OPENAI_MODEL=gpt-4.1-nano`
+- `OPENAI_TRANSCRIBE_MODEL=gpt-4o-mini-transcribe`
+- `OPENAI_TTS_MODEL=gpt-4o-mini-tts`
+- `OPENAI_TTS_VOICE=coral`
+
+### Prueba
+
+Cuando Railway termine el despliegue, abre:
+
+```text
+https://TU-SERVICIO.up.railway.app/health
+```
+
+Debe devolver:
+
+```json
+{"status":"ok"}
+```
+
+### Despues
+
+Cuando la URL publica funcione, cambia en el firmware la constante `kMemorySyncBaseUrl`
+de [memory_store.cc](/H:/Programacion/robotCabeza/xiaozhi-esp32/main/memory_store.cc) para que apunte a tu dominio Railway, recompila y reflashea el ESP32.
+
 ## Flujo
 
 1. El ESP32 abre WebSocket.
