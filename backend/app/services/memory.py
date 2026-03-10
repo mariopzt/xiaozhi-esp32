@@ -311,7 +311,7 @@ class MemoryService:
                 notes_lines.append(item)
         for item in context.memories:
             cleaned = str(item).strip()
-            if cleaned and cleaned not in notes_lines:
+            if cleaned and cleaned not in notes_lines and self._is_useful_memory_line(cleaned):
                 notes_lines.append(cleaned)
 
         recent_lines: list[str] = []
@@ -323,11 +323,17 @@ class MemoryService:
             speaker = "U" if role == "user" else "A"
             recent_lines.append(f"{speaker}: {text}")
 
+        direct_lines = self._build_direct_fact_lines(query, profile)
+        combined_context = self.render_context_block(context)
+        if direct_lines:
+            direct_block = "Direct memory matches:\n" + "\n".join(f"- {line}" for line in direct_lines)
+            combined_context = direct_block + ("\n\n" + combined_context if combined_context else "")
+
         return {
             "user_name": user_name,
             "notes": "\n".join(notes_lines),
             "recent_turns": "\n".join(recent_lines),
-            "combined_context": self.render_context_block(context),
+            "combined_context": combined_context,
         }
 
     async def import_device_snapshot(
@@ -550,6 +556,47 @@ class MemoryService:
 
     def _normalize_text(self, text: str) -> str:
         return " ".join(text.split()).strip()
+
+    def _is_useful_memory_line(self, text: str) -> bool:
+        lowered = text.casefold().strip()
+        if not lowered:
+            return False
+        if lowered.startswith("%"):
+            return False
+        if "unknown_" in lowered:
+            return False
+        if lowered in {"memo.", "memo", "número 2.", "numero 2.", "número 2", "numero 2"}:
+            return False
+        return True
+
+    def _build_direct_fact_lines(self, query: str, profile: dict[str, Any]) -> list[str]:
+        lowered = (query or "").casefold()
+        lines: list[str] = []
+
+        def add_if(condition: bool, value: Any, template: str) -> None:
+            if condition and value:
+                lines.append(template.format(value))
+
+        partner_terms = ("mujer", "esposa", "esposo", "pareja", "novia", "novio")
+        dog_terms = ("perro", "perra")
+        cat_terms = ("gato", "gata")
+        mother_terms = ("madre",)
+        father_terms = ("padre",)
+        son_terms = ("hijo",)
+        daughter_terms = ("hija",)
+
+        add_if(any(term in lowered for term in ("como me llamo", "cómo me llamo", "mi nombre", "quien soy", "quién soy")), profile.get("name"), "The user's name is {}.")
+        add_if(any(term in lowered for term in partner_terms), profile.get("partner_name"), "The user's partner is {}.")
+        add_if(any(term in lowered for term in dog_terms), profile.get("dog_name"), "The user's dog is {}.")
+        add_if(any(term in lowered for term in cat_terms), profile.get("cat_name"), "The user's cat is {}.")
+        add_if(any(term in lowered for term in mother_terms), profile.get("mother_name"), "The user's mother is {}.")
+        add_if(any(term in lowered for term in father_terms), profile.get("father_name"), "The user's father is {}.")
+        add_if(any(term in lowered for term in son_terms), profile.get("son_name"), "The user's son is {}.")
+        add_if(any(term in lowered for term in daughter_terms), profile.get("daughter_name"), "The user's daughter is {}.")
+        add_if(any(term in lowered for term in ("trabajo", "trabajas", "curro", "me dedico")), profile.get("work"), "The user's work is {}.")
+        add_if(any(term in lowered for term in ("vives", "vivo", "ciudad", "eres de", "soy de", "donde", "dónde")), profile.get("city"), "The user lives in or is from {}.")
+
+        return lines
 
     async def _store_memory(self, user_id: str, text: str, kind: str) -> None:
         if not self._should_store_memory_text(text, kind):
