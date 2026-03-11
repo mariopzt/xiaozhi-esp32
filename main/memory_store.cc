@@ -970,36 +970,42 @@ bool MemoryStore::SyncTurnToBackend(const std::string& role, const std::string& 
     return status >= 200 && status < 300;
 }
 
-std::string MemoryStore::FetchDueReminder() {
+bool MemoryStore::FetchDueReminder(std::string& reminder_id, std::string& message) {
+    reminder_id.clear();
+    message.clear();
+
     auto http = Board::GetInstance().GetNetwork()->CreateHttp(kMemorySyncTimeoutSeconds);
     if (http == nullptr) {
-        return "";
+        return false;
     }
 
     std::string url = std::string(kMemorySyncBaseUrl) + "/memory-sync/reminders/due/" + GetDeviceId() + "?limit=1";
     if (!http->Open("GET", url)) {
-        return "";
+        return false;
     }
 
     int status = http->GetStatusCode();
     std::string response = http->ReadAll();
     http->Close();
     if (status < 200 || status >= 300) {
-        return "";
+        return false;
     }
 
     cJSON* root = cJSON_Parse(response.c_str());
     if (root == nullptr) {
-        return "";
+        return false;
     }
 
-    std::string message;
     auto items = cJSON_GetObjectItem(root, "items");
     if (cJSON_IsArray(items) && cJSON_GetArraySize(items) > 0) {
         auto* first = cJSON_GetArrayItem(items, 0);
         if (cJSON_IsObject(first)) {
+            auto* id_item = cJSON_GetObjectItem(first, "reminder_id");
             auto* message_item = cJSON_GetObjectItem(first, "message");
             auto* text_item = cJSON_GetObjectItem(first, "text");
+            if (cJSON_IsString(id_item) && id_item->valuestring != nullptr) {
+                reminder_id = id_item->valuestring;
+            }
             if (cJSON_IsString(message_item) && message_item->valuestring != nullptr) {
                 message = message_item->valuestring;
             } else if (cJSON_IsString(text_item) && text_item->valuestring != nullptr) {
@@ -1009,7 +1015,39 @@ std::string MemoryStore::FetchDueReminder() {
     }
 
     cJSON_Delete(root);
-    return message;
+    return !reminder_id.empty() && !message.empty();
+}
+
+bool MemoryStore::AckDueReminder(const std::string& reminder_id) {
+    if (reminder_id.empty()) {
+        return false;
+    }
+
+    auto http = Board::GetInstance().GetNetwork()->CreateHttp(kMemorySyncTimeoutSeconds);
+    if (http == nullptr) {
+        return false;
+    }
+
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "reminder_id", reminder_id.c_str());
+    char* payload = cJSON_PrintUnformatted(root);
+    std::string body = payload ? payload : "{}";
+    if (payload != nullptr) {
+        cJSON_free(payload);
+    }
+    cJSON_Delete(root);
+
+    std::string url = std::string(kMemorySyncBaseUrl) + "/memory-sync/reminders/ack/" + GetDeviceId();
+    http->SetHeader("Content-Type", "application/json");
+    http->SetContent(std::move(body));
+    if (!http->Open("POST", url)) {
+        return false;
+    }
+
+    int status = http->GetStatusCode();
+    http->ReadAll();
+    http->Close();
+    return status >= 200 && status < 300;
 }
 
 bool MemoryStore::FetchContextFromBackend(const std::string& query, std::string& user_name, std::string& notes, std::string& recent_turns, std::string& combined_context) {
@@ -1140,4 +1178,5 @@ bool MemoryStore::HasPendingTurns() const {
     std::lock_guard<std::mutex> lock(pending_turns_mutex_);
     return !pending_turns_.empty();
 }
+
 

@@ -32,6 +32,9 @@ class MemoryRememberIn(BaseModel):
     note: str = ""
 
 
+class MemoryReminderAckIn(BaseModel):
+    reminder_id: str = ""
+
 @app.get("/memory-sync/reminders/due/{device_id}")
 async def memory_sync_due_reminders(device_id: str, limit: int = 1) -> dict[str, list[dict[str, str]]]:
     items = await backend.memory.pop_due_reminders(device_id, limit=max(1, min(limit, 3)))
@@ -101,6 +104,14 @@ async def memory_sync_clear(device_id: str) -> dict[str, bool]:
     await backend.memory.clear_device_memory(device_id)
     return {"ok": True}
 
+
+
+@app.post("/memory-sync/reminders/ack/{device_id}")
+async def memory_sync_ack_due_reminder(device_id: str, payload: MemoryReminderAckIn) -> dict[str, bool]:
+    reminder_id = payload.reminder_id.strip()
+    if reminder_id:
+        return {"ok": await backend.memory.ack_due_reminder(device_id, reminder_id)}
+    return {"ok": False}
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:

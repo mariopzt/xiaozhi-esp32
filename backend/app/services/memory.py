@@ -441,18 +441,9 @@ class MemoryService:
             if str(doc.get("last_notified_date") or "").strip() == today:
                 continue
 
-            await self._reminders.update_one(
-                {"_id": doc["_id"]},
-                {
-                    "$set": {
-                        "last_notified_at": utc_now(),
-                        "last_notified_date": today,
-                    },
-                    "$inc": {"notified_count": 1},
-                },
-            )
             items.append(
                 {
+                    "reminder_id": str(doc["_id"]),
                     "text": str(doc.get("text") or "").strip(),
                     "message": self._build_due_reminder_message(doc),
                 }
@@ -461,6 +452,25 @@ class MemoryService:
                 break
 
         return items
+
+    async def ack_due_reminder(self, user_id: str, reminder_id: str) -> bool:
+        try:
+            from bson import ObjectId
+            reminder_object_id = ObjectId(reminder_id)
+        except Exception:
+            return False
+
+        result = await self._reminders.update_one(
+            {"_id": reminder_object_id, "user_id": user_id, "status": "pending"},
+            {
+                "$set": {
+                    "last_notified_at": utc_now(),
+                    "last_notified_date": utc_now().astimezone(self._timezone).date().isoformat(),
+                },
+                "$inc": {"notified_count": 1},
+            },
+        )
+        return result.modified_count > 0
 
     async def _next_turn_index(self, user_id: str, session_id: str) -> int:
         last_turn = await self._turns.find_one(
@@ -1292,6 +1302,7 @@ class MemoryService:
         }
         tokens = re.findall(r"[a-zA-Z\u00c1-\u00ff0-9]{3,}", text.lower())
         return {token for token in tokens if token not in stopwords}
+
 
 
 

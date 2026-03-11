@@ -361,7 +361,20 @@ void Application::Run() {
 #endif
         
             auto state = GetDeviceState();
-            if ((state == kDeviceStateIdle || state == kDeviceStateListening) &&
+            if (!pending_due_reminder_message_.empty() &&
+                state != kDeviceStateSpeaking &&
+                state != kDeviceStateConnecting &&
+                !due_reminder_ack_task_running_.load(std::memory_order_relaxed)) {
+                std::string reminder_id = pending_due_reminder_id_;
+                std::string reminder_message = pending_due_reminder_message_;
+                pending_due_reminder_id_.clear();
+                pending_due_reminder_message_.clear();
+                Alert("Recordatorio", reminder_message.c_str(), "bell", Lang::Sounds::OGG_VIBRATION);
+                StartDueReminderAckTask(reminder_id);
+            }
+
+            if (pending_due_reminder_message_.empty() &&
+                (state == kDeviceStateIdle || state == kDeviceStateListening) &&
                 WifiManager::GetInstance().IsConnected() &&
                 !due_reminder_task_running_.load(std::memory_order_relaxed)) {
                 int64_t now_us = esp_timer_get_time();
@@ -1087,14 +1100,14 @@ void Application::StartDueReminderCheckTask() {
 
     auto task_entry = [](void* arg) {
         auto* app = static_cast<Application*>(arg);
-        std::string reminder = MemoryStore::GetInstance().FetchDueReminder();
-        if (!reminder.empty()) {
-            app->Schedule([app, reminder]() {
-                auto state = app->GetDeviceState();
-                if (state == kDeviceStateSpeaking || state == kDeviceStateConnecting) {
-                    return;
+        std::string reminder_id;
+        std::string reminder_message;
+        if (MemoryStore::GetInstance().FetchDueReminder(reminder_id, reminder_message)) {
+            app->Schedule([app, reminder_id, reminder_message]() {
+                if (app->pending_due_reminder_message_.empty()) {
+                    app->pending_due_reminder_id_ = reminder_id;
+                    app->pending_due_reminder_message_ = reminder_message;
                 }
-                app->Alert("Recordatorio", reminder.c_str(), "bell", Lang::Sounds::OGG_VIBRATION);
             });
         }
         app->due_reminder_task_running_.store(false, std::memory_order_relaxed);
@@ -1104,6 +1117,40 @@ void Application::StartDueReminderCheckTask() {
     if (xTaskCreate(task_entry, "due_reminder", 4096, this, 1, nullptr) != pdPASS) {
         due_reminder_task_running_.store(false, std::memory_order_relaxed);
         ESP_LOGE(TAG, "Failed to create due reminder task");
+    }
+}
+
+void Application::StartDueReminderAckTask(const std::string& reminder_id) {
+    if (reminder_id.empty()) {
+        return;
+    }
+    if (due_reminder_ack_task_running_.exchange(true, std::memory_order_relaxed)) {
+        return;
+    }
+
+    struct AckTaskArgs {
+        Application* app;
+        std::string reminder_id;
+    };
+
+    auto* task_args = new AckTaskArgs{this, reminder_id};
+
+    auto task_entry = [](void* arg) {
+        std::unique_ptr<AckTaskArgs> task_args(static_cast<AckTaskArgs*>(arg));
+        auto* app = task_args->app;
+        bool ok = MemoryStore::GetInstance().AckDueReminder(task_args->reminder_id);
+        if (!ok) {
+            app->last_due_reminder_check_us_ = 0;
+        }
+        app->due_reminder_ack_task_running_.store(false, std::memory_order_relaxed);
+        vTaskDelete(nullptr);
+    };
+
+    if (xTaskCreate(task_entry, "due_reminder_ack", 4096, task_args, 1, nullptr) != pdPASS) {
+        delete task_args;
+        due_reminder_ack_task_running_.store(false, std::memory_order_relaxed);
+        last_due_reminder_check_us_ = 0;
+        ESP_LOGE(TAG, "Failed to create due reminder ack task");
     }
 }
 

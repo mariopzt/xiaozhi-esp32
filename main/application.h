@@ -154,6 +154,7 @@ private:
     std::atomic<bool> barge_in_task_running_{false};
     std::atomic<bool> pending_tts_stream_start_{false};
     std::atomic<bool> due_reminder_task_running_{false};
+    std::atomic<bool> due_reminder_ack_task_running_{false};
     int clock_ticks_ = 0;
     TaskHandle_t activation_task_handle_ = nullptr;
     int64_t speaking_started_us_ = 0;
@@ -163,6 +164,8 @@ private:
     int listening_peak_level_ = 0;
     std::atomic<int64_t> last_incoming_audio_us_{0};
     int64_t last_due_reminder_check_us_ = 0;
+    std::string pending_due_reminder_id_;
+    std::string pending_due_reminder_message_;
 
 
     // Event handlers
@@ -179,6 +182,7 @@ private:
     void StartResumeListeningAfterTtsTask();
     void StartBargeInTask();
     void StartDueReminderCheckTask();
+    void StartDueReminderAckTask(const std::string& reminder_id);
     void StopAudioPlaybackOnMainThread();
 
     // Activation task (runs in background)
