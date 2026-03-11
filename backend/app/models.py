@@ -42,6 +42,7 @@ class MemoryContext:
     profile: dict[str, Any]
     memories: list[str]
     recent_turns: list[dict[str, Any]]
+    style_state: dict[str, Any] = field(default_factory=dict)
     relevant_turns: list[dict[str, Any]] = field(default_factory=list)
     summaries: list[str] = field(default_factory=list)
     session_summaries: list[str] = field(default_factory=list)

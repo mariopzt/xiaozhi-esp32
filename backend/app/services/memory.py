@@ -119,6 +119,9 @@ class MemoryService:
 
         saved: list[str] = []
         profile_updates = self._extract_profile_updates(normalized)
+        tone_updates = self._extract_tone_updates(normalized)
+        if tone_updates:
+            profile_updates = {**profile_updates, **tone_updates}
         if profile_updates:
             await self._profiles.update_one(
                 {"user_id": user_id},
@@ -190,11 +193,13 @@ class MemoryService:
         session_summaries = self._select_relevant_sessions(query, session_docs)
         reminders = self._select_relevant_reminders(query, reminder_docs)
         archive_stats = self._build_archive_stats(brain_doc, history_docs, session_docs)
+        style_state = self._build_style_state(profile, turn_docs)
 
         return MemoryContext(
             profile=profile,
             memories=selected_memories,
             recent_turns=list(reversed(turn_docs)),
+            style_state=style_state,
             relevant_turns=relevant_turns,
             summaries=summaries,
             session_summaries=session_summaries,
@@ -218,6 +223,13 @@ class MemoryService:
         if profile_lines:
             lines.append("Known user profile:")
             lines.extend(f"- {line}" for line in profile_lines)
+
+        style_lines = self._render_style_lines(context.style_state)
+        if style_lines:
+            if lines:
+                lines.append("")
+            lines.append("Conversation style:")
+            lines.extend(f"- {line}" for line in style_lines)
 
         if context.memories:
             if lines:
@@ -760,6 +772,10 @@ class MemoryService:
             items.append(f"The user lives in or is from {updates['city']}.")
         if "work" in updates:
             items.append(f"The user's work is {updates['work']}.")
+        if "relationship_tone" in updates:
+            items.append(f"The preferred relationship tone is {updates['relationship_tone']}.")
+        if "assistant_style" in updates:
+            items.append(f"The preferred assistant style is {updates['assistant_style']}.")
         relation_labels = {
             "partner_name": "The user's partner is",
             "mother_name": "The user's mother is",
@@ -786,6 +802,10 @@ class MemoryService:
             lines.append(f"City: {profile['city']}")
         if profile.get("work"):
             lines.append(f"Work: {profile['work']}")
+        if profile.get("relationship_tone"):
+            lines.append(f"Relationship tone: {profile['relationship_tone']}")
+        if profile.get("assistant_style"):
+            lines.append(f"Assistant style: {profile['assistant_style']}")
         relation_labels = {
             "partner_name": "Partner",
             "mother_name": "Mother",
@@ -802,7 +822,7 @@ class MemoryService:
                 lines.append(f"{label}: {profile[key]}")
         for key, value in profile.items():
             if key in {
-                "name", "age", "city", "work",
+                "name", "age", "city", "work", "relationship_tone", "assistant_style",
                 "partner_name", "mother_name", "father_name", "sister_name", "brother_name",
                 "daughter_name", "son_name", "dog_name", "cat_name",
                 "created_at", "updated_at",
@@ -821,6 +841,96 @@ class MemoryService:
         if len(assistant_text) > 180:
             assistant_text = assistant_text[:177].rstrip() + "..."
         return f"User said: {user_text} Assistant replied: {assistant_text}"
+
+    def _extract_tone_updates(self, text: str) -> dict[str, Any]:
+        lowered = text.casefold()
+        updates: dict[str, Any] = {}
+
+        warm_terms = ("cariño", "mi vida", "guapo", "guapa", "bonita", "te quiero", "amor")
+        playful_terms = ("jaja", "jajaja", "xd", "xds", "jeje", "broma", "vacile")
+        direct_terms = ("hazlo", "rápido", "rapido", "sin rodeos", "al grano")
+        frustrated_terms = ("tío", "tio", "joder", "mierda", "wtf", "no va", "que pasa", "qué pasa")
+
+        if any(term in lowered for term in warm_terms):
+            updates["relationship_tone"] = "warm"
+            updates["assistant_style"] = "close"
+        elif any(term in lowered for term in playful_terms):
+            updates["relationship_tone"] = "playful"
+            updates["assistant_style"] = "casual"
+        elif any(term in lowered for term in direct_terms):
+            updates["relationship_tone"] = "direct"
+            updates["assistant_style"] = "concise"
+        elif any(term in lowered for term in frustrated_terms):
+            updates["relationship_tone"] = "calm"
+            updates["assistant_style"] = "calm_and_brief"
+
+        explicit_tone = re.search(
+            r"\b(h[aá]blame|resp[oó]ndeme|cont[eé]stame)\s+(m[aá]s )?(cari[nñ]oso|cercano|serio|directo|divertido|gracioso|fr[ií]o|breve)",
+            text,
+            re.IGNORECASE,
+        )
+        if explicit_tone:
+            tone_word = explicit_tone.group(3).casefold()
+            tone_map = {
+                "cariñoso": ("warm", "close"),
+                "cercano": ("warm", "close"),
+                "serio": ("direct", "formal"),
+                "directo": ("direct", "concise"),
+                "divertido": ("playful", "casual"),
+                "gracioso": ("playful", "casual"),
+                "frío": ("neutral", "concise"),
+                "breve": ("direct", "concise"),
+            }
+            mapped = tone_map.get(tone_word)
+            if mapped:
+                updates["relationship_tone"], updates["assistant_style"] = mapped
+
+        return updates
+
+    def _build_style_state(self, profile: dict[str, Any], turn_docs: list[dict[str, Any]]) -> dict[str, Any]:
+        recent_user_texts = [
+            str(doc.get("text", "")).strip()
+            for doc in turn_docs[-6:]
+            if str(doc.get("role", "")).strip().lower() == "user"
+        ]
+        merged_recent = " ".join(recent_user_texts).casefold()
+        session_mood = "neutral"
+
+        if any(term in merged_recent for term in ("joder", "mierda", "wtf", "no va", "que pasa", "qué pasa")):
+            session_mood = "frustrated"
+        elif any(term in merged_recent for term in ("jaja", "jajaja", "jeje", "xd", "xds")):
+            session_mood = "playful"
+        elif any(term in merged_recent for term in ("gracias", "amor", "cariño", "bonita", "guapa")):
+            session_mood = "warm"
+        elif any(term in merged_recent for term in ("rápido", "rapido", "hazlo", "al grano", "sin rodeos")):
+            session_mood = "direct"
+
+        relationship_tone = str(profile.get("relationship_tone") or "neutral").strip() or "neutral"
+        assistant_style = str(profile.get("assistant_style") or "balanced").strip() or "balanced"
+
+        return {
+            "session_mood": session_mood,
+            "relationship_tone": relationship_tone,
+            "assistant_style": assistant_style,
+        }
+
+    def _render_style_lines(self, style_state: dict[str, Any]) -> list[str]:
+        if not style_state:
+            return []
+
+        lines: list[str] = []
+        session_mood = str(style_state.get("session_mood") or "").strip()
+        relationship_tone = str(style_state.get("relationship_tone") or "").strip()
+        assistant_style = str(style_state.get("assistant_style") or "").strip()
+
+        if session_mood:
+            lines.append(f"Current user mood looks {session_mood}.")
+        if relationship_tone:
+            lines.append(f"Preferred relationship tone is {relationship_tone}.")
+        if assistant_style:
+            lines.append(f"Assistant should answer in a {assistant_style} style.")
+
+        return lines
 
     def _extract_implicit_memories(self, text: str) -> list[str]:
         if "?" in text:
