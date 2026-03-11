@@ -894,7 +894,12 @@ class MemoryService:
 
     def _extract_tone_signal(self, text: str) -> dict[str, Any]:
         lowered = text.casefold()
-        signal: dict[str, Any] = {}
+        relationship_scores: dict[str, int] = {}
+        style_scores: dict[str, int] = {}
+
+        def add_signal(relationship_tone: str, assistant_style: str, weight: int) -> None:
+            relationship_scores[relationship_tone] = relationship_scores.get(relationship_tone, 0) + weight
+            style_scores[assistant_style] = style_scores.get(assistant_style, 0) + weight
 
         warm_terms = ("cariño", "mi vida", "guapo", "guapa", "bonita", "te quiero", "amor")
         playful_terms = ("jaja", "jajaja", "xd", "xds", "jeje", "broma", "vacile")
@@ -902,21 +907,13 @@ class MemoryService:
         frustrated_terms = ("tío", "tio", "joder", "mierda", "wtf", "no va", "que pasa", "qué pasa")
 
         if any(term in lowered for term in warm_terms):
-            signal["relationship_tone"] = "warm"
-            signal["assistant_style"] = "close"
-            signal["weight"] = 1
-        elif any(term in lowered for term in playful_terms):
-            signal["relationship_tone"] = "playful"
-            signal["assistant_style"] = "casual"
-            signal["weight"] = 1
-        elif any(term in lowered for term in direct_terms):
-            signal["relationship_tone"] = "direct"
-            signal["assistant_style"] = "concise"
-            signal["weight"] = 1
-        elif any(term in lowered for term in frustrated_terms):
-            signal["relationship_tone"] = "calm"
-            signal["assistant_style"] = "calm_and_brief"
-            signal["weight"] = 1
+            add_signal("warm", "close", 1)
+        if any(term in lowered for term in playful_terms):
+            add_signal("playful", "casual", 1)
+        if any(term in lowered for term in direct_terms):
+            add_signal("direct", "concise", 1)
+        if any(term in lowered for term in frustrated_terms):
+            add_signal("calm", "calm_and_brief", 1)
 
         explicit_tone = re.search(
             r"\b(h[aá]blame|resp[oó]ndeme|cont[eé]stame)\s+(m[aá]s )?(cari[nñ]oso|cercano|serio|directo|divertido|gracioso|fr[ií]o|breve)",
@@ -937,28 +934,52 @@ class MemoryService:
             }
             mapped = tone_map.get(tone_word)
             if mapped:
-                signal["relationship_tone"], signal["assistant_style"] = mapped
-                signal["weight"] = 3
+                add_signal(mapped[0], mapped[1], 3)
 
-        return signal
+        if not relationship_scores or not style_scores:
+            return {}
+
+        return {
+            "relationship_tone": self._pick_dominant_state(relationship_scores, fallback="neutral"),
+            "assistant_style": self._pick_dominant_state(style_scores, fallback="balanced"),
+            "weight": max(max(relationship_scores.values(), default=1), max(style_scores.values(), default=1)),
+        }
 
     def _build_style_state(self, profile: dict[str, Any], turn_docs: list[dict[str, Any]]) -> dict[str, Any]:
-        recent_user_texts = [
-            str(doc.get("text", "")).strip()
-            for doc in turn_docs[-6:]
-            if str(doc.get("role", "")).strip().lower() == "user"
-        ]
-        merged_recent = " ".join(recent_user_texts).casefold()
-        session_mood = "neutral"
+        recent_user_texts: list[str] = []
+        for doc in turn_docs:
+            if str(doc.get("role", "")).strip().lower() != "user":
+                continue
+            text = str(doc.get("text", "")).strip()
+            if text:
+                recent_user_texts.append(text)
+            if len(recent_user_texts) >= 6:
+                break
 
-        if any(term in merged_recent for term in ("joder", "mierda", "wtf", "no va", "que pasa", "qué pasa")):
-            session_mood = "frustrated"
-        elif any(term in merged_recent for term in ("jaja", "jajaja", "jeje", "xd", "xds")):
-            session_mood = "playful"
-        elif any(term in merged_recent for term in ("gracias", "amor", "cariño", "bonita", "guapa")):
-            session_mood = "warm"
-        elif any(term in merged_recent for term in ("rápido", "rapido", "hazlo", "al grano", "sin rodeos")):
-            session_mood = "direct"
+        merged_recent = " ".join(recent_user_texts).casefold()
+        session_scores = {
+            "frustrated": 0,
+            "playful": 0,
+            "warm": 0,
+            "direct": 0,
+        }
+
+        for term in ("joder", "mierda", "wtf", "no va", "que pasa", "qué pasa"):
+            if term in merged_recent:
+                session_scores["frustrated"] += 1
+        for term in ("jaja", "jajaja", "jeje", "xd", "xds"):
+            if term in merged_recent:
+                session_scores["playful"] += 1
+        for term in ("gracias", "amor", "cariño", "bonita", "guapa"):
+            if term in merged_recent:
+                session_scores["warm"] += 1
+        for term in ("rápido", "rapido", "hazlo", "al grano", "sin rodeos"):
+            if term in merged_recent:
+                session_scores["direct"] += 1
+
+        session_mood = "neutral"
+        if any(score > 0 for score in session_scores.values()):
+            session_mood = max(session_scores, key=session_scores.get)
 
         relationship_tone = str(profile.get("relationship_tone") or "neutral").strip() or "neutral"
         assistant_style = str(profile.get("assistant_style") or "balanced").strip() or "balanced"
@@ -984,6 +1005,14 @@ class MemoryService:
             lines.append(f"Preferred relationship tone is {relationship_tone}.")
         if assistant_style:
             lines.append(f"Assistant should answer in a {assistant_style} style.")
+        if session_mood == "frustrated":
+            lines.append("When answering now, prioritize calm, useful, brief replies.")
+        elif session_mood == "playful":
+            lines.append("When answering now, you may sound a bit playful but stay clear.")
+        elif session_mood == "warm":
+            lines.append("When answering now, keep a warm and close tone.")
+        elif session_mood == "direct":
+            lines.append("When answering now, go straight to the point.")
 
         return lines
 
