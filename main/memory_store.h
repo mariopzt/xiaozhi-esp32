@@ -26,6 +26,9 @@ public:
     void LearnFromUserText(const std::string& text);
     void AppendConversationLine(const char* speaker, const std::string& text);
     void Clear();
+    std::string GetSessionMood() const;
+    std::string GetRelationshipTone() const;
+    std::string GetAssistantStyle() const;
 
 private:
     MemoryStore() = default;
@@ -57,11 +60,16 @@ private:
     std::string MergeUniqueLines(const std::string& primary, const std::string& secondary, size_t max_chars) const;
     std::string UrlEncode(const std::string& value) const;
     bool HasPendingTurns() const;
+    void SetStyleState(const std::string& session_mood, const std::string& relationship_tone, const std::string& assistant_style);
 
     std::atomic<bool> backend_snapshot_dirty_{false};
     std::atomic<bool> sync_task_running_{false};
     mutable std::mutex pending_turns_mutex_;
+    mutable std::mutex style_state_mutex_;
     std::vector<std::pair<std::string, std::string>> pending_turns_;
+    std::string session_mood_;
+    std::string relationship_tone_;
+    std::string assistant_style_;
 };
 
 #endif

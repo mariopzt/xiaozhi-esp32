@@ -5,6 +5,7 @@
 #include "config.h"
 #include "display/display.h"
 #include "led/single_led.h"
+#include "led/mood_rgb_led.h"
 #include "settings.h"
 
 #include <esp_log.h>
@@ -75,7 +76,7 @@ public:
     }
 
     virtual Led* GetLed() override {
-        static SingleLed led(BUILTIN_LED_GPIO);
+        static MoodRgbLed led(EXTERNAL_RGB_LED_GPIO);
         return &led;
     }
 

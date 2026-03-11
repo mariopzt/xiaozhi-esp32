@@ -15,7 +15,7 @@
 #include "system_info.h"
 
 namespace {
-constexpr size_t kMaxNotesChars = 1200;
+constexpr size_t kMaxNotesChars = 2400;
 constexpr size_t kMaxRecentTurnsChars = 2800;
 constexpr const char* kMemorySyncBaseUrl = "https://xiaozhi-esp32-production.up.railway.app";
 constexpr int kMemorySyncTimeoutSeconds = 3;
@@ -118,6 +118,21 @@ cJSON* MemoryStore::GetContextJson() {
         return BuildContextJson(user_name, notes, recent_turns, combined_context);
     }
     return BuildContextJson(user_name, notes, recent_turns, BuildBootstrapFactsText(user_name, notes));
+}
+
+std::string MemoryStore::GetSessionMood() const {
+    std::lock_guard<std::mutex> lock(style_state_mutex_);
+    return session_mood_;
+}
+
+std::string MemoryStore::GetRelationshipTone() const {
+    std::lock_guard<std::mutex> lock(style_state_mutex_);
+    return relationship_tone_;
+}
+
+std::string MemoryStore::GetAssistantStyle() const {
+    std::lock_guard<std::mutex> lock(style_state_mutex_);
+    return assistant_style_;
 }
 
 cJSON* MemoryStore::GetUserProfileJson() {
@@ -1088,7 +1103,13 @@ bool MemoryStore::FetchContextFromBackend(const std::string& query, std::string&
 
     auto notes_item = cJSON_GetObjectItem(root, "notes");
     if (cJSON_IsString(notes_item) && notes_item->valuestring != nullptr) {
-        merged_notes = MergeUniqueLines(merged_notes, notes_item->valuestring, kMaxNotesChars);
+        std::string backend_notes = TrimToLimit(notes_item->valuestring, kMaxNotesChars);
+        if (!backend_notes.empty()) {
+            bool keep_local_overlay = backend_snapshot_dirty_.load(std::memory_order_relaxed) || HasPendingTurns();
+            merged_notes = keep_local_overlay
+                ? MergeUniqueLines(backend_notes, merged_notes, kMaxNotesChars)
+                : backend_notes;
+        }
     }
 
     auto recent_turns_item = cJSON_GetObjectItem(root, "recent_turns");
@@ -1099,6 +1120,22 @@ bool MemoryStore::FetchContextFromBackend(const std::string& query, std::string&
     auto combined_context_item = cJSON_GetObjectItem(root, "combined_context");
     if (cJSON_IsString(combined_context_item) && combined_context_item->valuestring != nullptr) {
         combined_context = combined_context_item->valuestring;
+    }
+
+    std::string session_mood;
+    std::string relationship_tone;
+    std::string assistant_style;
+    auto session_mood_item = cJSON_GetObjectItem(root, "session_mood");
+    if (cJSON_IsString(session_mood_item) && session_mood_item->valuestring != nullptr) {
+        session_mood = session_mood_item->valuestring;
+    }
+    auto relationship_tone_item = cJSON_GetObjectItem(root, "relationship_tone");
+    if (cJSON_IsString(relationship_tone_item) && relationship_tone_item->valuestring != nullptr) {
+        relationship_tone = relationship_tone_item->valuestring;
+    }
+    auto assistant_style_item = cJSON_GetObjectItem(root, "assistant_style");
+    if (cJSON_IsString(assistant_style_item) && assistant_style_item->valuestring != nullptr) {
+        assistant_style = assistant_style_item->valuestring;
     }
 
     cJSON_Delete(root);
@@ -1112,6 +1149,7 @@ bool MemoryStore::FetchContextFromBackend(const std::string& query, std::string&
     if (merged_turns != GetRecentTurns()) {
         SetRecentTurns(merged_turns);
     }
+    SetStyleState(session_mood, relationship_tone, assistant_style);
     user_name = merged_name;
     notes = merged_notes;
     recent_turns = merged_turns;
@@ -1177,6 +1215,14 @@ std::string MemoryStore::UrlEncode(const std::string& value) const {
 bool MemoryStore::HasPendingTurns() const {
     std::lock_guard<std::mutex> lock(pending_turns_mutex_);
     return !pending_turns_.empty();
+}
+
+
+void MemoryStore::SetStyleState(const std::string& session_mood, const std::string& relationship_tone, const std::string& assistant_style) {
+    std::lock_guard<std::mutex> lock(style_state_mutex_);
+    session_mood_ = session_mood;
+    relationship_tone_ = relationship_tone;
+    assistant_style_ = assistant_style;
 }
 
 

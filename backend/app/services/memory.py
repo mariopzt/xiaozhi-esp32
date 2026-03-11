@@ -155,8 +155,8 @@ class MemoryService:
         brain_doc = await self._brains.find_one({"user_id": user_id}, {"_id": 0, "user_id": 0}) or {}
         memory_docs = await self._memories.find(
             {"user_id": user_id},
-            {"_id": 0, "text": 1, "created_at": 1},
-        ).sort("created_at", -1).limit(40).to_list(length=40)
+            {"_id": 0, "text": 1, "kind": 1, "created_at": 1},
+        ).sort("created_at", -1).limit(120).to_list(length=120)
         turn_docs = await self._turns.find(
             {"user_id": user_id},
             {"_id": 0, "role": 1, "text": 1, "created_at": 1},
@@ -346,6 +346,9 @@ class MemoryService:
             "notes": "\n".join(notes_lines),
             "recent_turns": "\n".join(recent_lines),
             "combined_context": combined_context,
+            "session_mood": str(context.style_state.get("session_mood") or "").strip(),
+            "relationship_tone": str(context.style_state.get("relationship_tone") or "").strip(),
+            "assistant_style": str(context.style_state.get("assistant_style") or "").strip(),
         }
 
     async def import_device_snapshot(
@@ -1146,23 +1149,52 @@ class MemoryService:
             unique.append(memory)
         return unique
 
+    def _query_is_broad_memory_request(self, query: str) -> bool:
+        lowered = (query or "").casefold()
+        if not lowered.strip():
+            return True
+        broad_terms = (
+            "que recuerdas de mi",
+            "recuerdas de mi",
+            "que sabes de mi",
+            "sabes de mi",
+            "que recuerdas",
+            "que sabes",
+            "perfil",
+            "sobre mi",
+            "sobre nosotros",
+            "de mi vida",
+        )
+        return any(term in lowered for term in broad_terms)
+
     def _select_relevant_memories(self, query: str, memory_docs: list[dict[str, Any]]) -> list[str]:
         if not memory_docs:
             return []
 
         keywords = self._tokenize(query)
+        broad_memory_query = self._query_is_broad_memory_request(query)
         scored: list[tuple[int, int, str]] = []
         for index, doc in enumerate(memory_docs):
             text = doc["text"]
             score = 0
+            kind = str(doc.get("kind") or "").strip().lower()
             text_tokens = self._tokenize(text)
             if keywords:
                 overlap = len(keywords & text_tokens)
                 score += overlap * 10
+                if not broad_memory_query and overlap == 0 and index > 30:
+                    continue
+            if kind in {"explicit_remember", "device_remember"}:
+                score += 18
+            elif kind == "implicit_fact":
+                score += 12
+            elif kind == "device_snapshot":
+                score += 4
             score += max(0, 40 - index)
             scored.append((score, -index, text))
 
-        top = sorted(scored, reverse=True)[:8]
+        limit = 16 if broad_memory_query else 8
+        top = sorted(scored, reverse=True)[:limit]
         ordered = [text for _score, _idx, text in top if text]
         ordered.reverse()
         return ordered
@@ -1302,8 +1334,5 @@ class MemoryService:
         }
         tokens = re.findall(r"[a-zA-Z\u00c1-\u00ff0-9]{3,}", text.lower())
         return {token for token in tokens if token not in stopwords}
-
-
-
 
 

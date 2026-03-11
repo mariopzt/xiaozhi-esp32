@@ -21,6 +21,7 @@
 
 #define BOOT_BUTTON_GPIO         GPIO_NUM_0
 #define BUILTIN_LED_GPIO         GPIO_NUM_2
+#define EXTERNAL_RGB_LED_GPIO    GPIO_NUM_4
 
 #define LOCAL_XIAOZHI_WS_URL     "ws://192.168.1.132:8000/xiaozhi/v1/"
 #define LOCAL_XIAOZHI_WS_VERSION 1
