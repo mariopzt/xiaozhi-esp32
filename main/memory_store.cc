@@ -308,24 +308,50 @@ void MemoryStore::SyncToBackendAsync() {
         while (true) {
             vTaskDelay(pdMS_TO_TICKS(kMemorySyncDebounceMs));
 
-            if (!store->backend_snapshot_dirty_.load(std::memory_order_relaxed)) {
+            if (!store->backend_snapshot_dirty_.load(std::memory_order_relaxed) && !store->HasPendingTurns()) {
                 break;
             }
 
-            store->backend_snapshot_dirty_.store(false, std::memory_order_relaxed);
-            if (!store->SyncSnapshotToBackend()) {
+            bool had_snapshot = store->backend_snapshot_dirty_.exchange(false, std::memory_order_relaxed);
+            if (had_snapshot && !store->SyncSnapshotToBackend()) {
                 store->backend_snapshot_dirty_.store(true, std::memory_order_relaxed);
                 vTaskDelay(pdMS_TO_TICKS(kMemorySyncRetryMs));
                 continue;
             }
 
-            if (!store->backend_snapshot_dirty_.load(std::memory_order_relaxed)) {
+            while (store->HasPendingTurns()) {
+                std::pair<std::string, std::string> next_turn;
+                {
+                    std::lock_guard<std::mutex> lock(store->pending_turns_mutex_);
+                    if (store->pending_turns_.empty()) {
+                        break;
+                    }
+                    next_turn = store->pending_turns_.front();
+                }
+
+                if (!store->SyncTurnToBackend(next_turn.first, next_turn.second)) {
+                    store->backend_snapshot_dirty_.store(true, std::memory_order_relaxed);
+                    vTaskDelay(pdMS_TO_TICKS(kMemorySyncRetryMs));
+                    break;
+                }
+
+                {
+                    std::lock_guard<std::mutex> lock(store->pending_turns_mutex_);
+                    if (!store->pending_turns_.empty() &&
+                        store->pending_turns_.front().first == next_turn.first &&
+                        store->pending_turns_.front().second == next_turn.second) {
+                        store->pending_turns_.erase(store->pending_turns_.begin());
+                    }
+                }
+            }
+
+            if (!store->backend_snapshot_dirty_.load(std::memory_order_relaxed) && !store->HasPendingTurns()) {
                 break;
             }
         }
 
         store->sync_task_running_.store(false, std::memory_order_relaxed);
-        if (store->backend_snapshot_dirty_.load(std::memory_order_relaxed)) {
+        if (store->backend_snapshot_dirty_.load(std::memory_order_relaxed) || store->HasPendingTurns()) {
             store->SyncToBackendAsync();
         }
         vTaskDelete(nullptr);
@@ -464,8 +490,9 @@ void MemoryStore::AppendConversationLine(const char* speaker, const std::string&
     turns += line;
     SetRecentTurns(TrimToLimit(turns, kMaxRecentTurnsChars));
     SyncToBackendAsync();
-    std::string role = (speaker[0] == 'U') ? "user" : "assistant";
-    SyncTurnToBackendAsync(role, normalized);
+    if (speaker[0] == 'U') {
+        SyncTurnToBackendAsync("user", normalized);
+    }
 }
 
 void MemoryStore::Clear() {
@@ -906,23 +933,11 @@ void MemoryStore::SyncTurnToBackendAsync(const std::string& role, const std::str
     if (role.empty() || text.empty()) {
         return;
     }
-
-    struct TurnSyncArgs {
-        std::string role;
-        std::string text;
-    };
-
-    auto* args = new TurnSyncArgs{role, text};
-    auto task_entry = [](void* raw) {
-        std::unique_ptr<TurnSyncArgs> args(static_cast<TurnSyncArgs*>(raw));
-        MemoryStore::GetInstance().SyncTurnToBackend(args->role, args->text);
-        vTaskDelete(nullptr);
-    };
-
-    if (xTaskCreate(task_entry, "memory_turn", 4096, args, 1, nullptr) != pdPASS) {
-        delete args;
-        ESP_LOGE(TAG, "Failed to create memory turn sync task");
+    {
+        std::lock_guard<std::mutex> lock(pending_turns_mutex_);
+        pending_turns_.emplace_back(role, text);
     }
+    SyncToBackendAsync();
 }
 
 bool MemoryStore::SyncTurnToBackend(const std::string& role, const std::string& text) {
@@ -1077,4 +1092,9 @@ std::string MemoryStore::UrlEncode(const std::string& value) const {
     }
 
     return encoded.str();
+}
+
+bool MemoryStore::HasPendingTurns() const {
+    std::lock_guard<std::mutex> lock(pending_turns_mutex_);
+    return !pending_turns_.empty();
 }

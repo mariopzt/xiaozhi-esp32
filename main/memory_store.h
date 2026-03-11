@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <atomic>
+#include <mutex>
 
 #include <cJSON.h>
 
@@ -53,9 +54,12 @@ private:
     std::string GetDeviceId() const;
     std::string MergeUniqueLines(const std::string& primary, const std::string& secondary, size_t max_chars) const;
     std::string UrlEncode(const std::string& value) const;
+    bool HasPendingTurns() const;
 
     std::atomic<bool> backend_snapshot_dirty_{false};
     std::atomic<bool> sync_task_running_{false};
+    mutable std::mutex pending_turns_mutex_;
+    std::vector<std::pair<std::string, std::string>> pending_turns_;
 };
 
 #endif
