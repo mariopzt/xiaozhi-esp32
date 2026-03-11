@@ -119,9 +119,7 @@ class MemoryService:
 
         saved: list[str] = []
         profile_updates = self._extract_profile_updates(normalized)
-        tone_updates = self._extract_tone_updates(normalized)
-        if tone_updates:
-            profile_updates = {**profile_updates, **tone_updates}
+        tone_signal = self._extract_tone_signal(normalized)
         if profile_updates:
             await self._profiles.update_one(
                 {"user_id": user_id},
@@ -129,6 +127,8 @@ class MemoryService:
                 upsert=True,
             )
             saved.extend(self._format_profile_updates(profile_updates))
+        if tone_signal:
+            await self._apply_tone_signal(user_id, tone_signal)
 
         explicit_memory = self._extract_explicit_memory(normalized)
         if explicit_memory:
@@ -823,6 +823,7 @@ class MemoryService:
         for key, value in profile.items():
             if key in {
                 "name", "age", "city", "work", "relationship_tone", "assistant_style",
+                "relationship_tone_scores", "assistant_style_scores",
                 "partner_name", "mother_name", "father_name", "sister_name", "brother_name",
                 "daughter_name", "son_name", "dog_name", "cat_name",
                 "created_at", "updated_at",
@@ -842,9 +843,58 @@ class MemoryService:
             assistant_text = assistant_text[:177].rstrip() + "..."
         return f"User said: {user_text} Assistant replied: {assistant_text}"
 
-    def _extract_tone_updates(self, text: str) -> dict[str, Any]:
+    async def _apply_tone_signal(self, user_id: str, signal: dict[str, Any]) -> None:
+        now = utc_now()
+        profile = await self._profiles.find_one({"user_id": user_id}, {"_id": 0}) or {}
+
+        relationship_tone = str(signal.get("relationship_tone") or "").strip()
+        assistant_style = str(signal.get("assistant_style") or "").strip()
+        weight = int(signal.get("weight") or 1)
+        if weight < 1:
+            weight = 1
+
+        relationship_scores = dict(profile.get("relationship_tone_scores") or {})
+        style_scores = dict(profile.get("assistant_style_scores") or {})
+
+        if relationship_tone:
+            relationship_scores[relationship_tone] = int(relationship_scores.get(relationship_tone, 0)) + weight
+        if assistant_style:
+            style_scores[assistant_style] = int(style_scores.get(assistant_style, 0)) + weight
+
+        dominant_relationship = self._pick_dominant_state(relationship_scores, fallback="neutral")
+        dominant_style = self._pick_dominant_state(style_scores, fallback="balanced")
+
+        await self._profiles.update_one(
+            {"user_id": user_id},
+            {
+                "$set": {
+                    "relationship_tone_scores": relationship_scores,
+                    "assistant_style_scores": style_scores,
+                    "relationship_tone": dominant_relationship,
+                    "assistant_style": dominant_style,
+                    "updated_at": now,
+                },
+                "$setOnInsert": {"created_at": now},
+            },
+            upsert=True,
+        )
+
+    def _pick_dominant_state(self, scores: dict[str, Any], *, fallback: str) -> str:
+        best_key = fallback
+        best_score = -1
+        for key, value in scores.items():
+            try:
+                score = int(value)
+            except (TypeError, ValueError):
+                continue
+            if score > best_score:
+                best_key = str(key)
+                best_score = score
+        return best_key
+
+    def _extract_tone_signal(self, text: str) -> dict[str, Any]:
         lowered = text.casefold()
-        updates: dict[str, Any] = {}
+        signal: dict[str, Any] = {}
 
         warm_terms = ("cariño", "mi vida", "guapo", "guapa", "bonita", "te quiero", "amor")
         playful_terms = ("jaja", "jajaja", "xd", "xds", "jeje", "broma", "vacile")
@@ -852,17 +902,21 @@ class MemoryService:
         frustrated_terms = ("tío", "tio", "joder", "mierda", "wtf", "no va", "que pasa", "qué pasa")
 
         if any(term in lowered for term in warm_terms):
-            updates["relationship_tone"] = "warm"
-            updates["assistant_style"] = "close"
+            signal["relationship_tone"] = "warm"
+            signal["assistant_style"] = "close"
+            signal["weight"] = 1
         elif any(term in lowered for term in playful_terms):
-            updates["relationship_tone"] = "playful"
-            updates["assistant_style"] = "casual"
+            signal["relationship_tone"] = "playful"
+            signal["assistant_style"] = "casual"
+            signal["weight"] = 1
         elif any(term in lowered for term in direct_terms):
-            updates["relationship_tone"] = "direct"
-            updates["assistant_style"] = "concise"
+            signal["relationship_tone"] = "direct"
+            signal["assistant_style"] = "concise"
+            signal["weight"] = 1
         elif any(term in lowered for term in frustrated_terms):
-            updates["relationship_tone"] = "calm"
-            updates["assistant_style"] = "calm_and_brief"
+            signal["relationship_tone"] = "calm"
+            signal["assistant_style"] = "calm_and_brief"
+            signal["weight"] = 1
 
         explicit_tone = re.search(
             r"\b(h[aá]blame|resp[oó]ndeme|cont[eé]stame)\s+(m[aá]s )?(cari[nñ]oso|cercano|serio|directo|divertido|gracioso|fr[ií]o|breve)",
@@ -883,9 +937,10 @@ class MemoryService:
             }
             mapped = tone_map.get(tone_word)
             if mapped:
-                updates["relationship_tone"], updates["assistant_style"] = mapped
+                signal["relationship_tone"], signal["assistant_style"] = mapped
+                signal["weight"] = 3
 
-        return updates
+        return signal
 
     def _build_style_state(self, profile: dict[str, Any], turn_docs: list[dict[str, Any]]) -> dict[str, Any]:
         recent_user_texts = [
