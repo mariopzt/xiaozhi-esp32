@@ -32,6 +32,12 @@ class MemoryRememberIn(BaseModel):
     note: str = ""
 
 
+@app.get("/memory-sync/reminders/due/{device_id}")
+async def memory_sync_due_reminders(device_id: str, limit: int = 1) -> dict[str, list[dict[str, str]]]:
+    items = await backend.memory.pop_due_reminders(device_id, limit=max(1, min(limit, 3)))
+    return {"items": items}
+
+
 @app.on_event("startup")
 async def startup() -> None:
     await backend.startup()
@@ -103,3 +109,4 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
 if __name__ == "__main__":
     uvicorn.run("app.main:app", host=settings.backend_host, port=settings.backend_port, reload=False)
+

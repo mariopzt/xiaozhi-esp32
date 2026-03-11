@@ -23,6 +23,7 @@
 
 namespace {
 constexpr int64_t kTtsStreamQuietUs = 180000;
+constexpr int64_t kDueReminderCheckIntervalUs = 60000000;
 constexpr int kTtsPlaybackTailMs = 40;
 constexpr int kBargeInMinLevel = 1200;
 constexpr int kBargeInFloorMargin = 220;
@@ -359,6 +360,17 @@ void Application::Run() {
             }
 #endif
         
+            auto state = GetDeviceState();
+            if ((state == kDeviceStateIdle || state == kDeviceStateListening) &&
+                WifiManager::GetInstance().IsConnected() &&
+                !due_reminder_task_running_.load(std::memory_order_relaxed)) {
+                int64_t now_us = esp_timer_get_time();
+                if (last_due_reminder_check_us_ == 0 || now_us - last_due_reminder_check_us_ >= kDueReminderCheckIntervalUs) {
+                    last_due_reminder_check_us_ = now_us;
+                    StartDueReminderCheckTask();
+                }
+            }
+
             // Print debug info every 10 seconds
             if (clock_ticks_ % 10 == 0) {
                 SystemInfo::PrintHeapStats();
@@ -1068,6 +1080,33 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
 #endif
 }
 
+void Application::StartDueReminderCheckTask() {
+    if (due_reminder_task_running_.exchange(true, std::memory_order_relaxed)) {
+        return;
+    }
+
+    auto task_entry = [](void* arg) {
+        auto* app = static_cast<Application*>(arg);
+        std::string reminder = MemoryStore::GetInstance().FetchDueReminder();
+        if (!reminder.empty()) {
+            app->Schedule([app, reminder]() {
+                auto state = app->GetDeviceState();
+                if (state == kDeviceStateSpeaking || state == kDeviceStateConnecting) {
+                    return;
+                }
+                app->Alert("Recordatorio", reminder.c_str(), "bell", Lang::Sounds::OGG_VIBRATION);
+            });
+        }
+        app->due_reminder_task_running_.store(false, std::memory_order_relaxed);
+        vTaskDelete(nullptr);
+    };
+
+    if (xTaskCreate(task_entry, "due_reminder", 4096, this, 1, nullptr) != pdPASS) {
+        due_reminder_task_running_.store(false, std::memory_order_relaxed);
+        ESP_LOGE(TAG, "Failed to create due reminder task");
+    }
+}
+
 void Application::StartResumeListeningAfterTtsTask() {
 #if CONFIG_BOARD_TYPE_ROBOTCABEZA_ESP32_INMP441
     if (resume_listening_task_running_.exchange(true, std::memory_order_relaxed)) {
@@ -1556,4 +1595,8 @@ void Application::ResetProtocol() {
         protocol_.reset();
     });
 }
+
+
+
+
 

@@ -970,6 +970,48 @@ bool MemoryStore::SyncTurnToBackend(const std::string& role, const std::string& 
     return status >= 200 && status < 300;
 }
 
+std::string MemoryStore::FetchDueReminder() {
+    auto http = Board::GetInstance().GetNetwork()->CreateHttp(kMemorySyncTimeoutSeconds);
+    if (http == nullptr) {
+        return "";
+    }
+
+    std::string url = std::string(kMemorySyncBaseUrl) + "/memory-sync/reminders/due/" + GetDeviceId() + "?limit=1";
+    if (!http->Open("GET", url)) {
+        return "";
+    }
+
+    int status = http->GetStatusCode();
+    std::string response = http->ReadAll();
+    http->Close();
+    if (status < 200 || status >= 300) {
+        return "";
+    }
+
+    cJSON* root = cJSON_Parse(response.c_str());
+    if (root == nullptr) {
+        return "";
+    }
+
+    std::string message;
+    auto items = cJSON_GetObjectItem(root, "items");
+    if (cJSON_IsArray(items) && cJSON_GetArraySize(items) > 0) {
+        auto* first = cJSON_GetArrayItem(items, 0);
+        if (cJSON_IsObject(first)) {
+            auto* message_item = cJSON_GetObjectItem(first, "message");
+            auto* text_item = cJSON_GetObjectItem(first, "text");
+            if (cJSON_IsString(message_item) && message_item->valuestring != nullptr) {
+                message = message_item->valuestring;
+            } else if (cJSON_IsString(text_item) && text_item->valuestring != nullptr) {
+                message = text_item->valuestring;
+            }
+        }
+    }
+
+    cJSON_Delete(root);
+    return message;
+}
+
 bool MemoryStore::FetchContextFromBackend(const std::string& query, std::string& user_name, std::string& notes, std::string& recent_turns, std::string& combined_context) {
     auto http = Board::GetInstance().GetNetwork()->CreateHttp(kMemorySyncTimeoutSeconds);
     if (http == nullptr) {
@@ -1098,3 +1140,4 @@ bool MemoryStore::HasPendingTurns() const {
     std::lock_guard<std::mutex> lock(pending_turns_mutex_);
     return !pending_turns_.empty();
 }
+

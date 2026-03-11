@@ -153,6 +153,7 @@ private:
     std::atomic<bool> resume_listening_task_running_{false};
     std::atomic<bool> barge_in_task_running_{false};
     std::atomic<bool> pending_tts_stream_start_{false};
+    std::atomic<bool> due_reminder_task_running_{false};
     int clock_ticks_ = 0;
     TaskHandle_t activation_task_handle_ = nullptr;
     int64_t speaking_started_us_ = 0;
@@ -161,6 +162,7 @@ private:
     int64_t listening_voice_started_us_ = 0;
     int listening_peak_level_ = 0;
     std::atomic<int64_t> last_incoming_audio_us_{0};
+    int64_t last_due_reminder_check_us_ = 0;
 
 
     // Event handlers
@@ -176,6 +178,7 @@ private:
     void ContinueWakeWordInvoke(const std::string& wake_word);
     void StartResumeListeningAfterTtsTask();
     void StartBargeInTask();
+    void StartDueReminderCheckTask();
     void StopAudioPlaybackOnMainThread();
 
     // Activation task (runs in background)
@@ -209,3 +212,7 @@ private:
 };
 
 #endif // _APPLICATION_H_
+
+
+
+

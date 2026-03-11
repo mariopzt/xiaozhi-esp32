@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import timedelta, timezone
+from datetime import time, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -419,6 +419,49 @@ class MemoryService:
         await self._brains.delete_many({"user_id": user_id})
         await self._turns.delete_many({"user_id": user_id})
 
+    async def pop_due_reminders(self, user_id: str, limit: int = 1) -> list[dict[str, str]]:
+        now_local = utc_now().astimezone(self._timezone)
+        if not self._in_default_reminder_window(now_local):
+            return []
+
+        today = now_local.date().isoformat()
+        docs = await self._reminders.find(
+            {
+                "user_id": user_id,
+                "status": "pending",
+                "due_date": {"$lte": today, "$ne": ""},
+            },
+            {"_id": 1, "text": 1, "due_hint": 1, "due_date": 1, "last_notified_date": 1},
+        ).sort("created_at", 1).to_list(length=max(1, min(limit * 4, 12)))
+
+        items: list[dict[str, str]] = []
+        for doc in docs:
+            if not self._reminder_is_due_now(doc, now_local):
+                continue
+            if str(doc.get("last_notified_date") or "").strip() == today:
+                continue
+
+            await self._reminders.update_one(
+                {"_id": doc["_id"]},
+                {
+                    "$set": {
+                        "last_notified_at": utc_now(),
+                        "last_notified_date": today,
+                    },
+                    "$inc": {"notified_count": 1},
+                },
+            )
+            items.append(
+                {
+                    "text": str(doc.get("text") or "").strip(),
+                    "message": self._build_due_reminder_message(doc),
+                }
+            )
+            if len(items) >= limit:
+                break
+
+        return items
+
     async def _next_turn_index(self, user_id: str, session_id: str) -> int:
         last_turn = await self._turns.find_one(
             {"user_id": user_id, "session_id": session_id},
@@ -669,6 +712,8 @@ class MemoryService:
                 "due_date": reminder["due_date"],
                 "status": "pending",
                 "created_at": utc_now(),
+                "last_notified_date": "",
+                "notified_count": 0,
             }
         )
         if reminder["due_hint"]:
@@ -696,6 +741,23 @@ class MemoryService:
             {"$set": {"status": "done", "done_at": utc_now()}},
         )
         return f"Reminder completed: {reminder['text']}."
+
+    def _in_default_reminder_window(self, now_local) -> bool:
+        current = now_local.timetz().replace(tzinfo=None)
+        return time(9, 0) <= current <= time(13, 0)
+
+    def _reminder_is_due_now(self, doc: dict[str, Any], now_local) -> bool:
+        due_date = str(doc.get("due_date") or "").strip()
+        if not due_date:
+            return False
+        return due_date <= now_local.date().isoformat()
+
+    def _build_due_reminder_message(self, doc: dict[str, Any]) -> str:
+        text = str(doc.get("text") or "").strip()
+        due_hint = str(doc.get("due_hint") or "").strip()
+        if due_hint:
+            return f"Recordatorio pendiente: {text} ({due_hint})."
+        return f"Recordatorio pendiente: {text}."
 
     def _extract_explicit_memory(self, text: str) -> str:
         patterns = [
@@ -1230,3 +1292,7 @@ class MemoryService:
         }
         tokens = re.findall(r"[a-zA-Z\u00c1-\u00ff0-9]{3,}", text.lower())
         return {token for token in tokens if token not in stopwords}
+
+
+
+

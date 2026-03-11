@@ -21,6 +21,7 @@ public:
     void SyncToBackendAsync();
     void SyncTurnToBackendAsync(const std::string& role, const std::string& text);
     void RefreshFromBackend();
+    std::string FetchDueReminder();
     void LearnFromUserText(const std::string& text);
     void AppendConversationLine(const char* speaker, const std::string& text);
     void Clear();
@@ -63,3 +64,4 @@ private:
 };
 
 #endif
+
