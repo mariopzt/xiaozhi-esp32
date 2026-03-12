@@ -111,6 +111,9 @@ void Application::Initialize() {
         xEventGroupSetBits(event_group_, MAIN_EVENT_STATE_CHANGED);
     });
 
+    // Starting state is set before listeners are registered, so push the initial LED state once here.
+    board.GetLed()->OnStateChanged();
+
     // Start the clock timer to update the status bar
     esp_timer_start_periodic(clock_timer_handle_, 1000000);
 
@@ -1339,7 +1342,6 @@ void Application::HandleStateChangedEvent() {
             listening_voice_started_us_ = 0;
             listening_peak_level_ = 0;
             display->SetStatus(Lang::Strings::LISTENING);
-            display->SetEmotion("neutral");
             audio_service_.SetVadSpeakerActive(false);
 
             bool should_play_popup = play_popup_on_listening_;

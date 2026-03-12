@@ -4,8 +4,7 @@
 #include "button.h"
 #include "config.h"
 #include "display/display.h"
-#include "led/single_led.h"
-#include "led/mood_rgb_led.h"
+#include "led/circular_strip.h"
 #include "settings.h"
 
 #include <esp_log.h>
@@ -76,7 +75,7 @@ public:
     }
 
     virtual Led* GetLed() override {
-        static MoodRgbLed led(EXTERNAL_RGB_LED_GPIO);
+        static CircularStrip led(EXTERNAL_RGB_LED_GPIO, EXTERNAL_RGB_LED_COUNT);
         return &led;
     }
 
@@ -107,3 +106,4 @@ public:
 };
 
 DECLARE_BOARD(RobotCabezaEsp32Inmp441Board);
+

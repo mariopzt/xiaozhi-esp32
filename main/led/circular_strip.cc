@@ -1,11 +1,57 @@
 #include "circular_strip.h"
 #include "application.h"
+#include "memory_store.h"
 #include <esp_log.h>
 #include <algorithm>
 
 #define TAG "CircularStrip"
 
 #define BLINK_INFINITE -1
+
+namespace {
+StripColor ScaleColor(const StripColor& color, uint8_t percent) {
+    return {
+        static_cast<uint8_t>((static_cast<uint16_t>(color.red) * percent) / 100),
+        static_cast<uint8_t>((static_cast<uint16_t>(color.green) * percent) / 100),
+        static_cast<uint8_t>((static_cast<uint16_t>(color.blue) * percent) / 100),
+    };
+}
+
+std::string ResolveMoodKey(MemoryStore& memory) {
+    auto mood = memory.GetSessionMood();
+    if (mood.empty() || mood == "neutral") {
+        mood = memory.GetRelationshipTone();
+    }
+    if (mood.empty()) {
+        mood = "neutral";
+    }
+    return mood;
+}
+
+StripColor ResolveMoodColor(const std::string& mood, uint8_t default_brightness, uint8_t low_brightness) {
+    uint8_t medium_brightness = std::max<uint8_t>(low_brightness + 4, default_brightness / 2);
+
+    if (mood == "happy" || mood == "playful") {
+        return {default_brightness, medium_brightness, low_brightness};
+    }
+    if (mood == "sad") {
+        return {low_brightness, low_brightness, default_brightness};
+    }
+    if (mood == "angry" || mood == "frustrated") {
+        return {default_brightness, 0, 0};
+    }
+    if (mood == "thinking" || mood == "confused" || mood == "direct") {
+        return {0, medium_brightness, default_brightness};
+    }
+    if (mood == "warm" || mood == "close") {
+        return {default_brightness, low_brightness, medium_brightness};
+    }
+    if (mood == "calm" || mood == "calm_and_brief") {
+        return {0, default_brightness, medium_brightness};
+    }
+    return {medium_brightness, medium_brightness, low_brightness};
+}
+}
 
 CircularStrip::CircularStrip(gpio_num_t gpio, uint16_t max_leds) : max_leds_(max_leds) {
     // If the gpio is not connected, you should use NoLed class
@@ -197,6 +243,9 @@ void CircularStrip::SetBrightness(uint8_t default_brightness, uint8_t low_bright
 void CircularStrip::OnStateChanged() {
     auto& app = Application::GetInstance();
     auto device_state = app.GetDeviceState();
+    auto& memory = MemoryStore::GetInstance();
+    auto mood = ResolveMoodKey(memory);
+    auto mood_color = ResolveMoodColor(mood, default_brightness_, low_brightness_);
     switch (device_state) {
         case kDeviceStateStarting: {
             StripColor low = { 0, 0, 0 };
@@ -210,7 +259,7 @@ void CircularStrip::OnStateChanged() {
             break;
         }
         case kDeviceStateIdle:
-            FadeOut(50);
+            SetAllColor(ScaleColor(mood_color, 18));
             break;
         case kDeviceStateConnecting: {
             StripColor color = { low_brightness_, low_brightness_, default_brightness_ };
@@ -219,13 +268,11 @@ void CircularStrip::OnStateChanged() {
         }
         case kDeviceStateListening:
         case kDeviceStateAudioTesting: {
-            StripColor color = { default_brightness_, low_brightness_, low_brightness_ };
-            SetAllColor(color);
+            SetAllColor(mood_color);
             break;
         }
         case kDeviceStateSpeaking: {
-            StripColor color = { low_brightness_, default_brightness_, low_brightness_ };
-            SetAllColor(color);
+            Scroll({0, 0, 0}, mood_color, 1, 80);
             break;
         }
         case kDeviceStateUpgrading: {
