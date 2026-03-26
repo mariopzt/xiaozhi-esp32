@@ -7,6 +7,7 @@
 #include <mutex>
 
 #include <cJSON.h>
+#include "mood.h"
 
 class MemoryStore {
 public:
@@ -29,6 +30,8 @@ public:
     std::string GetSessionMood() const;
     std::string GetRelationshipTone() const;
     std::string GetAssistantStyle() const;
+    MoodKey GetSessionMoodKey() const { return static_cast<MoodKey>(session_mood_key_.load()); }
+    MoodKey GetRelationshipToneKey() const { return static_cast<MoodKey>(relationship_tone_key_.load()); }
 
 private:
     MemoryStore() = default;
@@ -67,6 +70,8 @@ private:
     mutable std::mutex pending_turns_mutex_;
     mutable std::mutex style_state_mutex_;
     std::vector<std::pair<std::string, std::string>> pending_turns_;
+    std::atomic<uint8_t> session_mood_key_{kMoodNeutral};
+    std::atomic<uint8_t> relationship_tone_key_{kMoodNeutral};
     std::string session_mood_;
     std::string relationship_tone_;
     std::string assistant_style_;

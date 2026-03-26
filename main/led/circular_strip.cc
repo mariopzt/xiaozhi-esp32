@@ -17,36 +17,49 @@ StripColor ScaleColor(const StripColor& color, uint8_t percent) {
     };
 }
 
-std::string ResolveMoodKey(MemoryStore& memory) {
-    auto mood = memory.GetSessionMood();
-    if (mood.empty() || mood == "neutral") {
-        mood = memory.GetRelationshipTone();
+MoodKey ResolveMoodKey(Application& app, MemoryStore& memory) {
+    auto emotion = app.GetCurrentEmotionKey();
+    if (emotion != kMoodNeutral) {
+        return emotion;
     }
-    if (mood.empty()) {
-        mood = "neutral";
+
+    auto reactive_mood = app.GetReactiveMoodKey();
+    if (reactive_mood != kMoodNeutral) {
+        return reactive_mood;
     }
-    return mood;
+
+    auto session_mood = memory.GetSessionMoodKey();
+    if (session_mood != kMoodNeutral) {
+        return session_mood;
+    }
+
+    auto relationship_tone = memory.GetRelationshipToneKey();
+    if (relationship_tone != kMoodNeutral) {
+        return relationship_tone;
+    }
+
+    return kMoodNeutral;
 }
 
-StripColor ResolveMoodColor(const std::string& mood, uint8_t default_brightness, uint8_t low_brightness) {
+StripColor ResolveMoodColor(MoodKey mood, uint8_t default_brightness, uint8_t low_brightness) {
     uint8_t medium_brightness = std::max<uint8_t>(low_brightness + 4, default_brightness / 2);
 
-    if (mood == "happy" || mood == "playful") {
+    if (mood == kMoodHappy || mood == kMoodPlayful) {
         return {default_brightness, medium_brightness, low_brightness};
     }
-    if (mood == "sad") {
+    if (mood == kMoodSad) {
         return {low_brightness, low_brightness, default_brightness};
     }
-    if (mood == "angry" || mood == "frustrated") {
+    if (mood == kMoodAngry || mood == kMoodFrustrated) {
         return {default_brightness, 0, 0};
     }
-    if (mood == "thinking" || mood == "confused" || mood == "direct") {
+    if (mood == kMoodThinking || mood == kMoodConfused || mood == kMoodDirect) {
         return {0, medium_brightness, default_brightness};
     }
-    if (mood == "warm" || mood == "close") {
+    if (mood == kMoodWarm || mood == kMoodClose) {
         return {default_brightness, low_brightness, medium_brightness};
     }
-    if (mood == "calm" || mood == "calm_and_brief") {
+    if (mood == kMoodCalm || mood == kMoodCalmAndBrief) {
         return {0, default_brightness, medium_brightness};
     }
     return {medium_brightness, medium_brightness, low_brightness};
@@ -244,7 +257,7 @@ void CircularStrip::OnStateChanged() {
     auto& app = Application::GetInstance();
     auto device_state = app.GetDeviceState();
     auto& memory = MemoryStore::GetInstance();
-    auto mood = ResolveMoodKey(memory);
+    auto mood = ResolveMoodKey(app, memory);
     auto mood_color = ResolveMoodColor(mood, default_brightness_, low_brightness_);
     switch (device_state) {
         case kDeviceStateStarting: {

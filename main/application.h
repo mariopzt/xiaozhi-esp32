@@ -17,6 +17,7 @@
 #include "audio_service.h"
 #include "device_state.h"
 #include "device_state_machine.h"
+#include "mood.h"
 
 // Main event bits
 #define MAIN_EVENT_SCHEDULE             (1 << 0)
@@ -116,6 +117,8 @@ public:
     void PlaySound(const std::string_view& sound);
     void StopAudioPlayback();
     AudioService& GetAudioService() { return audio_service_; }
+    MoodKey GetCurrentEmotionKey() const { return static_cast<MoodKey>(current_emotion_key_.load()); }
+    MoodKey GetReactiveMoodKey() const { return static_cast<MoodKey>(reactive_mood_key_.load()); }
     
     /**
      * Reset protocol resources (thread-safe)
@@ -155,6 +158,8 @@ private:
     std::atomic<bool> pending_tts_stream_start_{false};
     std::atomic<bool> due_reminder_task_running_{false};
     std::atomic<bool> due_reminder_ack_task_running_{false};
+    std::atomic<uint8_t> current_emotion_key_{kMoodNeutral};
+    std::atomic<uint8_t> reactive_mood_key_{kMoodNeutral};
     int clock_ticks_ = 0;
     TaskHandle_t activation_task_handle_ = nullptr;
     int64_t speaking_started_us_ = 0;
@@ -195,6 +200,8 @@ private:
     void ShowActivationCode(const std::string& code, const std::string& message);
     void SetListeningMode(ListeningMode mode);
     ListeningMode GetDefaultListeningMode() const;
+    void SetCurrentEmotion(const char* emotion);
+    void SetReactiveMoodFromUserText(const char* text);
     
     // State change handler called by state machine
     void OnStateChanged(DeviceState old_state, DeviceState new_state);

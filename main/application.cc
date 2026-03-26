@@ -67,6 +67,14 @@ Application::Application() {
     esp_timer_create(&clock_timer_args, &clock_timer_handle_);
 }
 
+void Application::SetCurrentEmotion(const char* emotion) {
+    current_emotion_key_.store(MoodKeyFromText(emotion));
+}
+
+void Application::SetReactiveMoodFromUserText(const char* text) {
+    reactive_mood_key_.store(MoodKeyFromUserText(text));
+}
+
 Application::~Application() {
     if (clock_timer_handle_ != nullptr) {
         esp_timer_stop(clock_timer_handle_);
@@ -751,15 +759,19 @@ void Application::InitializeProtocol() {
                 ESP_LOGI(TAG, ">> %s", text->valuestring);
                 MemoryStore::GetInstance().LearnFromUserText(text->valuestring);
                 MemoryStore::GetInstance().AppendConversationLine("U", text->valuestring);
-                Schedule([display, message = std::string(text->valuestring)]() {
+                Schedule([this, display, message = std::string(text->valuestring)]() {
+                    SetReactiveMoodFromUserText(message.c_str());
+                    Board::GetInstance().GetLed()->OnStateChanged();
                     display->SetChatMessage("user", message.c_str());
                 });
             }
         } else if (strcmp(type->valuestring, "llm") == 0) {
             auto emotion = cJSON_GetObjectItem(root, "emotion");
             if (cJSON_IsString(emotion)) {
-                Schedule([display, emotion_str = std::string(emotion->valuestring)]() {
+                Schedule([this, display, emotion_str = std::string(emotion->valuestring)]() {
+                    SetCurrentEmotion(emotion_str.c_str());
                     display->SetEmotion(emotion_str.c_str());
+                    Board::GetInstance().GetLed()->OnStateChanged();
                 });
             }
         } else if (strcmp(type->valuestring, "mcp") == 0) {

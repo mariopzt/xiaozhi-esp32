@@ -1223,6 +1223,8 @@ void MemoryStore::SetStyleState(const std::string& session_mood, const std::stri
     session_mood_ = session_mood;
     relationship_tone_ = relationship_tone;
     assistant_style_ = assistant_style;
+    session_mood_key_.store(MoodKeyFromText(session_mood.c_str()));
+    relationship_tone_key_.store(MoodKeyFromText(relationship_tone.c_str()));
 }
 
 
